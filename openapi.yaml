@@ -1,0 +1,1026 @@
+openapi: 3.0.3
+info:
+  title: blowball Multi-Agent Backend API
+  version: "1.0.0"
+  description: |
+    HTTP API surface for the blowball multi-agent backend.
+
+    Authentication is JWT Bearer. All routes except `/auth/login` require an
+    `Authorization: Bearer <token>` header. Errors follow the unified envelope
+    `{"error": {"code": "ERROR_CODE", "message": "..."}}`.
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT access token issued by POST /api/v1/auth/login.
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+              example: BAD_REQUEST
+            message:
+              type: string
+              description: Human-readable error description.
+              example: invalid request body
+    LoginRequest:
+      type: object
+      required: [username]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          description: >-
+            User password, verified against the seed-created bcrypt hash.
+            Required only when auth.password_required is true (the default);
+            in passwordless mode the password, if sent, is ignored.
+    LoginResponse:
+      type: object
+      required: [access_token, expire, token_type]
+      properties:
+        access_token:
+          type: string
+          description: Signed JWT to send as `Bearer` in subsequent requests.
+        expire:
+          type: integer
+          format: int64
+          description: Token expiry as a Unix timestamp (seconds).
+        token_type:
+          type: string
+          enum: [Bearer]
+          example: Bearer
+    SessionListEntry:
+      type: object
+      required: [session_id, title, update_time]
+      properties:
+        session_id:
+          type: string
+        title:
+          type: string
+        update_time:
+          type: string
+          format: date-time
+          description: RFC3339 timestamp of the last update.
+    SessionListResponse:
+      type: object
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionListEntry'
+    CreateSessionResponse:
+      type: object
+      required: [session_id]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+          description: Server-generated UUID v7 session identifier.
+          example: 018f9b8a-7c1a-7e6a-8e6a-6c1a7c1a7c1a
+    Message:
+      type: object
+      required: [id, session_id, msg_time, agent, msg_index, role, event_type, content, trace_id, update_time]
+      properties:
+        id:
+          type: integer
+          format: int64
+        session_id:
+          type: string
+          format: uuid
+        msg_time:
+          type: string
+          format: date-time
+        agent:
+          type: string
+          enum: [user, Confucius, Chongzhi, Liang]
+        msg_index:
+          type: integer
+        role:
+          type: string
+          enum: [user, assistant, tool, ""]
+        event_type:
+          type: string
+          enum: [message, token, tool_call, agent_start, agent_end, agent_error, reasoning]
+        content:
+          type: string
+        trace_id:
+          type: string
+          format: uuid
+        update_time:
+          type: string
+          format: date-time
+    SessionMessagesResponse:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        next_page_token:
+          type: string
+          description: Opaque cursor for the next page. Absent on the final page.
+    SendMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          description: User message text (must be non-empty).
+    # ---- SSE event payloads -------------------------------------------------
+    SSEAgentStart:
+      type: object
+      required: [type, agent]
+      properties:
+        type: {type: string, enum: [agent_start]}
+        agent: {type: string}
+    SSEToken:
+      type: object
+      required: [type, agent, content]
+      properties:
+        type: {type: string, enum: [token]}
+        agent: {type: string}
+        content: {type: string, description: Incremental text token.}
+    SSEReasoning:
+      type: object
+      required: [type, agent, content]
+      properties:
+        type: {type: string, enum: [reasoning]}
+        agent: {type: string}
+        content: {type: string, description: Incremental reasoning/thinking token.}
+    SSEToolCall:
+      type: object
+      required: [type, agent, content]
+      properties:
+        type: {type: string, enum: [tool_call]}
+        agent: {type: string}
+        content: {type: string, description: Tool name.}
+        meta:
+          type: object
+          properties:
+            args: {type: object, additionalProperties: true}
+    SSEAgentEnd:
+      type: object
+      required: [type, agent]
+      properties:
+        type: {type: string, enum: [agent_end]}
+        agent: {type: string}
+    SSEAgentError:
+      type: object
+      required: [type, agent, content]
+      properties:
+        type: {type: string, enum: [agent_error]}
+        agent: {type: string}
+        content: {type: string, description: Error message.}
+        meta:
+          type: object
+          properties:
+            error_code: {type: string}
+    SSEDone:
+      type: object
+      required: [type, meta]
+      properties:
+        type: {type: string, enum: [done]}
+        meta:
+          type: object
+          required: [usage]
+          properties:
+            usage:
+              type: object
+              required: [prompt_tokens, completion_tokens, total_tokens]
+              properties:
+                prompt_tokens: {type: integer}
+                completion_tokens: {type: integer}
+                total_tokens: {type: integer}
+    FileEntry:
+      type: object
+      required: [name, type, size, update_time]
+      properties:
+        name: {type: string}
+        type: {type: string, enum: [file, dir]}
+        size: {type: integer, format: int64}
+        update_time:
+          type: string
+          format: date-time
+    FileListResponse:
+      type: object
+      required: [files]
+      properties:
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileEntry'
+    UploadResponse:
+      type: object
+      required: [path, size]
+      properties:
+        path: {type: string, description: Workspace-relative path of the stored file.}
+        size: {type: integer, format: int64}
+    FileContentResponse:
+      type: object
+      required: [path, content, size]
+      properties:
+        path: {type: string}
+        content: {type: string}
+        size: {type: integer}
+    UpdateTitleRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          description: New session title (max 20 characters; longer values are truncated).
+    UpdateTitleResponse:
+      type: object
+      required: [session_id, title, update_time]
+      properties:
+        session_id: {type: string}
+        title: {type: string}
+        update_time:
+          type: string
+          format: date-time
+    RenameRequest:
+      type: object
+      required: [new_path]
+      properties:
+        new_path:
+          type: string
+          minLength: 1
+          description: Workspace-relative destination path.
+    RenameResponse:
+      type: object
+      required: [old_path, new_path]
+      properties:
+        old_path: {type: string}
+        new_path: {type: string}
+    MCPTool:
+      type: object
+      required: [type, name, description, parameters]
+      properties:
+        type:
+          type: string
+          enum: [function]
+          example: function
+        name: {type: string}
+        description: {type: string}
+        parameters:
+          type: object
+          additionalProperties: true
+          description: JSON Schema describing the tool's input parameters.
+    MCPToolsResponse:
+      type: object
+      required: [tools]
+      properties:
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/MCPTool'
+    SkillEntry:
+      type: object
+      required: [name, filename, size, update_time]
+      properties:
+        name:
+          type: string
+          description: Skill identifier (the subdirectory name containing SKILL.md).
+        filename:
+          type: string
+          description: Same as `name`; the skill directory name.
+        size: {type: integer, format: int64}
+        update_time:
+          type: string
+          format: date-time
+    SkillsResponse:
+      type: object
+      required: [skills]
+      properties:
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/SkillEntry'
+    OnlyOfficeConfigResponse:
+      type: object
+      required: [server_url, config, token]
+      description: |
+        A server-signed OnlyOffice DocEditor config. The browser loads api.js
+        from `server_url` and instantiates `new DocsAPI.DocEditor(id,
+        {...config, token})`. The OnlyOffice secret never leaves the server —
+        `token` is an HS256 JWT whose payload is `config`, verifiable by the
+        DocumentServer with the same secret.
+      properties:
+        server_url:
+          type: string
+          description: Browser-facing DocumentServer origin (api.js is loaded from here).
+        config:
+          type: object
+          description: |
+            DocEditor config object. Contains `documentType` (word/cell/slide),
+            `document{fileType, key, title, url, permissions{edit:true,
+            download:true}}` and `editorConfig{mode:"edit", callbackUrl,
+            customization{forcesave:true}, user}`. `document.key` is freshly
+            random per request; `document.url` and `editorConfig.callbackUrl`
+            are rooted at the backend's internal origin and carry the user JWT
+            as a query `token`.
+          additionalProperties: true
+        token:
+          type: string
+          description: HS256 JWT signing `config` with the OnlyOffice secret.
+    OnlyOfficeCallbackRequest:
+      type: object
+      description: |
+        OnlyOffice DocumentServer save callback. `status` 2/6 carry the edited
+        document at `url` and trigger a download + workspace overwrite; other
+        statuses (1/3/4/7) are acknowledged without writing.
+      properties:
+        status:
+          type: integer
+          description: Document state (1=being edited, 2=ready for saving, 3/7=saving error, 4=closed no changes, 6=forcesave).
+        key:
+          type: string
+          description: Document key the config was signed with.
+        url:
+          type: string
+          description: URL of the edited document to download (only present on save statuses).
+    OnlyOfficeCallbackResponse:
+      type: object
+      required: [error]
+      description: |
+        OnlyOffice callback contract. `error` 0 = success; non-0 makes the
+        DocumentServer retry. Auth/path errors are reported as normal HTTP 4xx,
+        not through this body.
+      properties:
+        error: {type: integer, description: "0 on success, non-0 to trigger a DocumentServer retry."}
+  responses:
+    BadRequest:
+      description: Malformed request body or missing field.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Unauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Forbidden:
+      description: Operation not permitted (e.g. path outside workspace).
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    AlreadyExists:
+      description: Target resource already exists.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    PayloadTooLarge:
+      description: Uploaded file exceeds the size limit.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Internal:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+security:
+  - BearerAuth: []
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Health check endpoint.
+      security: []
+      responses:
+        '200':
+          description: Server is healthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Exchange a username for a JWT access token.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+            example: {username: alice}
+      responses:
+        '200':
+          description: Successful login.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LoginResponse'}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: |
+            Authentication failed. The `message` distinguishes the cause:
+            `user not found` or `user disabled`. Unexpected internal failures
+            collapse to a generic `unauthorized`.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                userNotFound:    {value: {error: {code: UNAUTHORIZED, message: "user not found"}}}
+                userDisabled:    {value: {error: {code: UNAUTHORIZED, message: "user disabled"}}}
+                unauthorized:    {value: {error: {code: UNAUTHORIZED, message: "unauthorized"}}}
+  /api/v1/sessions:
+    get:
+      tags: [Session]
+      summary: List the authenticated user's sessions, newest first.
+      responses:
+        '200':
+          description: Session list (empty array when none exist).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SessionListResponse'}
+              examples:
+                populated: {value: {sessions: [{session_id: sess_1, title: "Plan release", update_time: "2026-06-11T10:00:00Z"}]}}
+                empty:     {value: {sessions: []}}
+        '500':
+          $ref: '#/components/responses/Internal'
+    post:
+      tags: [Session]
+      summary: Create a new session.
+      description: |
+        The server mints a UUID v7 session_id, persists the session row, and
+        returns it. Clients must create a session before sending messages.
+      responses:
+        '200':
+          description: Session created successfully.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CreateSessionResponse'}
+        '500':
+          $ref: '#/components/responses/Internal'
+  /api/v1/sessions/{session_id}:
+    delete:
+      tags: [Session]
+      summary: Delete a session owned by the authenticated user.
+      description: |
+        Archives the session and all of its titles/messages verbatim into the
+        `*_deleted` mirror tables, purges the live rows (archive + purge is a
+        single atomic transaction), and removes the warm-tier session file.
+        Redis cache entries (`session:{id}`, `msgs:{id}`) are intentionally not
+        cleared; every read path re-validates ownership against MySQL first, so
+        stale cache keys are unreachable until they expire on TTL. Deleting a
+        session that does not exist or belongs to another user returns 404; the
+        existence of another user's session is never disclosed.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: {type: string}
+          description: ID of the session to delete.
+      responses:
+        '204':
+          description: Session deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Internal'
+    patch:
+      tags: [Session]
+      summary: Update the title of a session owned by the authenticated user.
+      description: |
+        Sets a manual title for the session. Manual titles are not overwritten
+        by asynchronous AI title generation and the session's update_time is
+        refreshed so the session appears first in the list.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: {type: string}
+          description: ID of the session to update.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateTitleRequest'}
+      responses:
+        '200':
+          description: Title updated successfully.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UpdateTitleResponse'}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Internal'
+  /api/v1/sessions/{session_id}/messages:
+    get:
+      tags: [Session]
+      summary: List the messages of a session with cursor pagination.
+      description: |
+        Returns the full event stream of a session owned by the authenticated
+        user. Messages are ordered by `(msg_time, msg_index)` ascending by
+        default; use `order=desc` to retrieve newest first. Pass
+        `page_token` from the previous response to advance pages.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: page_token
+          in: query
+          required: false
+          schema: {type: string}
+          description: Opaque cursor from the previous page's `next_page_token`.
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+          description: Number of messages per page. Values above 200 are clamped.
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+          description: Sort order for `(msg_time, msg_index)`.
+      responses:
+        '200':
+          description: Paginated message list.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SessionMessagesResponse'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Internal'
+    post:
+      tags: [Session]
+      summary: Send a user message and stream the agent's response as SSE.
+      description: |
+        The session must already exist and belong to the authenticated user.
+        Sending to a non-existent session or another user's session returns 404.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SendMessageRequest'}
+      responses:
+        '200':
+          description: |
+            Server-Sent Events stream. Each event is two lines:
+            `event: <type>` and `data: <json>` followed by a blank line.
+            Event types: `agent_start`, `token`, `reasoning`, `tool_call`, `agent_end`,
+            `agent_error`, `done`. The `done` event is always the final event.
+          content:
+            text/event-stream:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SSEAgentStart'
+                  - $ref: '#/components/schemas/SSEToken'
+                  - $ref: '#/components/schemas/SSEReasoning'
+                  - $ref: '#/components/schemas/SSEToolCall'
+                  - $ref: '#/components/schemas/SSEAgentEnd'
+                  - $ref: '#/components/schemas/SSEAgentError'
+                  - $ref: '#/components/schemas/SSEDone'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Internal'
+  /api/v1/workspace/files:
+    get:
+      tags: [Workspace]
+      summary: List files in (a subdirectory of) the user's workspace.
+      parameters:
+        - name: path
+          in: query
+          required: false
+          schema: {type: string}
+          description: Optional workspace-relative subdirectory. Defaults to the workspace root.
+        - name: include_hidden
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Whether to include hidden files and directories (names starting with '.'). Defaults to false.
+      responses:
+        '200':
+          description: File/dir entries, sorted (directories first, then name).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FileListResponse'}
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Internal'
+  /api/v1/workspace/files/download/{path}:
+    get:
+      tags: [Workspace]
+      summary: Download a workspace file using a URL token.
+      description: |
+        Authenticates via the `token` query parameter instead of the
+        `Authorization` header. Designed for browser-native elements such as
+        `<a download>`, `<img src>`, and PDF.js that cannot set custom headers.
+        Returns `Content-Disposition: attachment` by default; pass `inline=1`
+        for preview contexts. The response also carries
+        `Cache-Control: private, no-store` and `Referrer-Policy: no-referrer`
+        to mitigate the risk of the JWT leaking through caches or Referer headers.
+      security: []
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+          description: Workspace-relative file path (catch-all, may include `/`).
+          example: reports/2026-q2.md
+        - name: token
+          in: query
+          required: true
+          schema: {type: string}
+          description: JWT access token issued by POST /api/v1/auth/login.
+        - name: inline
+          in: query
+          required: false
+          schema:
+            type: integer
+            enum: [1]
+          description: "Set to 1 to return Content-Disposition: inline for previews."
+      responses:
+        '200':
+          description: File bytes; content-type reflects the file extension.
+          headers:
+            Content-Disposition:
+              description: attachment or inline, with ASCII and RFC 5987 filename values.
+              schema: {type: string}
+            Cache-Control:
+              schema: {type: string, example: "private, no-store"}
+            Referrer-Policy:
+              schema: {type: string, example: "no-referrer"}
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Missing/empty `path`, or `path` resolves to a directory.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                missingPath: {value: {error: {code: BAD_REQUEST, message: "path is required"}}}
+                directory:   {value: {error: {code: BAD_REQUEST, message: "path is a directory"}}}
+        '401':
+          description: Missing, invalid, or expired query token.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                missingToken:  {value: {error: {code: UNAUTHORIZED, message: "missing token"}}}
+                invalidToken:  {value: {error: {code: UNAUTHORIZED, message: "invalid token"}}}
+                expiredToken:  {value: {error: {code: UNAUTHORIZED, message: "token expired"}}}
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Internal'
+  /api/v1/workspace/upload:
+    post:
+      tags: [Workspace]
+      summary: Upload a file into the user's workspace.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                path:
+                  type: string
+                  description: Destination subdirectory (empty/absent means root).
+      responses:
+        '200':
+          description: Upload succeeded.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UploadResponse'}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          description: Uploaded file exceeds the 50 MiB size limit.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                fileTooLarge: {value: {error: {code: FILE_TOO_LARGE, message: "file too large"}}}
+        '500':
+          $ref: '#/components/responses/Internal'
+  /api/v1/workspace/files/{path}:
+    get:
+      tags: [Workspace]
+      summary: Download a workspace file as raw bytes.
+      description: |
+        The `path` parameter is a workspace-relative path (which may contain
+        slashes). `path` ending in `/content` selects the text-content
+        endpoint instead. The content-type of the response reflects the
+        file's extension.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+          description: Workspace-relative file path (catch-all, may include `/`).
+          example: reports/2026-q2.md
+      responses:
+        '200':
+          description: File bytes; content-type varies by extension.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Path resolves to a directory.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Internal'
+    delete:
+      tags: [Workspace]
+      summary: Delete a workspace file or directory.
+      description: |
+        Removes a file or, when the path targets a directory, recursively
+        removes the directory and everything beneath it. The path is validated
+        with the same traversal / symlink-escape check as the read endpoints,
+        so anything resolving outside the workspace is rejected with 403.
+        Workspace files have no database source table, so nothing is archived —
+        the entry is removed from the filesystem only.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+          description: Workspace-relative file or directory path (catch-all, may include `/`).
+          example: reports/old
+      responses:
+        '204':
+          description: File or directory deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Internal'
+    put:
+      tags: [Workspace]
+      summary: Rename or move a workspace file or directory.
+      description: |
+        Renames or moves a file or directory within the user's workspace. The
+        destination path must not already exist (as either a file or directory);
+        if it does, the operation returns 409 without making any changes.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+          description: Workspace-relative source file or directory path (catch-all, may include `/`).
+          example: reports/old.md
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RenameRequest'}
+      responses:
+        '200':
+          description: Rename succeeded.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RenameResponse'}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/AlreadyExists'
+        '500':
+          $ref: '#/components/responses/Internal'
+  /api/v1/workspace/files/{path}/content:
+    get:
+      tags: [Workspace]
+      summary: Fetch a workspace file's text content as JSON.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+          description: Workspace-relative file path (catch-all, may include `/`).
+      responses:
+        '200':
+          description: Decoded text content of the file.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FileContentResponse'}
+        '400':
+          description: File is binary or path is a directory. Use the download endpoint for binary files.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                binaryFile: {value: {error: {code: BINARY_FILE, message: "binary file, use download endpoint"}}}
+                directory:  {value: {error: {code: BAD_REQUEST, message: "path is a directory"}}}
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Internal'
+  /api/v1/workspace/files/{path}/onlyoffice-config:
+    get:
+      tags: [Workspace]
+      summary: Build and sign an OnlyOffice editor config for a workspace office file.
+      description: |
+        Returns a server-signed DocEditor config (`{server_url, config, token}`)
+        so the browser can open the file for editing in OnlyOffice. The OnlyOffice
+        secret lives only in the backend config and never reaches the browser; the
+        returned `token` is an HS256 JWT whose payload is `config`. `document.url`
+        and `editorConfig.callbackUrl` point at the backend's internal origin and
+        embed the caller's JWT as a query `token`, and `document.key` is freshly
+        random so reopening always re-converts. Shares the workspace catch-all with
+        `/content`, dispatching on the trailing `/onlyoffice-config` suffix.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+          description: Workspace-relative office file path (catch-all, may include `/`).
+          example: reports/2026-q2.docx
+      responses:
+        '200':
+          description: Signed editor config.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OnlyOfficeConfigResponse'}
+        '400':
+          description: The path resolves to a directory.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                directory: {value: {error: {code: BAD_REQUEST, message: "path is a directory"}}}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: OnlyOffice is not configured (secret empty); editing is disabled.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                disabled: {value: {error: {code: ONLYOFFICE_DISABLED, message: "onlyoffice is not configured"}}}
+  /api/v1/workspace/onlyoffice-callback:
+    post:
+      tags: [Workspace]
+      summary: Receive an OnlyOffice document-save callback and persist it.
+      description: |
+        Endpoint the OnlyOffice DocumentServer POSTs to when a document is saved.
+        Authenticates via the `token` query parameter (the user JWT embedded in
+        the signed `callbackUrl`) instead of the Authorization header, since the
+        callback originates from the DocumentServer container. For save statuses
+        (2/6) it downloads the edited file from `url` — host-allowlisted to the
+        configured DocumentServer to mitigate SSRF — and atomically overwrites the
+        workspace file (capped at the upload size limit). Non-save statuses are
+        acknowledged without writing. Outcomes use OnlyOffice's `{"error": N}`
+        convention (0 = ok, non-0 = retry); auth/path errors are normal HTTP 4xx.
+      security: []
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema: {type: string}
+          description: Workspace-relative file path to overwrite.
+          example: reports/2026-q2.docx
+        - name: token
+          in: query
+          required: true
+          schema: {type: string}
+          description: JWT access token (embedded in the signed callbackUrl).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OnlyOfficeCallbackRequest'}
+            examples:
+              save: {value: {status: 2, key: "abc123", url: "http://documentserver/cache/abc.docx"}}
+              forcesave: {value: {status: 6, key: "abc123", url: "http://documentserver/cache/abc.docx"}}
+              editing: {value: {status: 1, key: "abc123"}}
+      responses:
+        '200':
+          description: Callback processed; body reports success or a retryable error.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OnlyOfficeCallbackResponse'}
+              examples:
+                ok: {value: {error: 0}}
+                retry: {value: {error: 1}}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: OnlyOffice is not configured (secret empty); editing is disabled.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                disabled: {value: {error: {code: ONLYOFFICE_DISABLED, message: "onlyoffice is not configured"}}}
+  /api/v1/mcp/tools:
+    get:
+      tags: [MCP]
+      summary: List the combined MCP tool catalogue.
+      description: |
+        Returns the combined tool catalogue: regular Xizhi registry tools,
+        tools advertised by configured external MCP servers, and the synthetic
+        `invoke_chongzhi` / `invoke_liang` agent-invocation tools. Each entry
+        follows the OpenAI function-tool shape (`type: function`).
+      responses:
+        '200':
+          description: Tool list.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MCPToolsResponse'}
+  /api/v1/skills:
+    get:
+      tags: [Skills]
+      summary: List the authenticated user's skills.
+      responses:
+        '200':
+          description: Skill list (empty array when none exist).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkillsResponse'}
+        '500':
+          $ref: '#/components/responses/Internal'
