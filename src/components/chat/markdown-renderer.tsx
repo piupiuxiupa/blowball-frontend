@@ -1,8 +1,8 @@
+import { memo } from 'react';
 import type { Components } from 'react-markdown';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { CodeBlock } from './code-block';
 
 const components: Components = {
   code(props) {
@@ -14,17 +14,7 @@ const components: Components = {
     const value = String(children ?? '').replace(/\n$/, '');
 
     if (language) {
-      return (
-        <SyntaxHighlighter
-          {...rest}
-          style={oneLight}
-          language={language}
-          PreTag="div"
-          className="rounded-md text-sm"
-        >
-          {value}
-        </SyntaxHighlighter>
-      );
+      return <CodeBlock language={language} value={value} />;
     }
 
     return (
@@ -43,7 +33,7 @@ interface MarkdownRendererProps {
   className?: string;
 }
 
-export function MarkdownRenderer({ children, className }: MarkdownRendererProps) {
+export const MarkdownRenderer = memo(function MarkdownRenderer({ children, className }: MarkdownRendererProps) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -53,4 +43,4 @@ export function MarkdownRenderer({ children, className }: MarkdownRendererProps)
       {children}
     </ReactMarkdown>
   );
-}
+});

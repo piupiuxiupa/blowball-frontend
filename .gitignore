@@ -7,3 +7,5 @@ vite.config.js
 vite.config.d.ts
 .env
 .DS_Store
+.claude/
+.codegraph/

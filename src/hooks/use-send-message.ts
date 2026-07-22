@@ -32,7 +32,7 @@ function buildOptimisticUserMessage(sessionId: string, content: string, messages
 export function useSendMessage() {
   const queryClient = useQueryClient();
   const { token } = useAuthStore();
-  const { appendToken, clearStreaming, appendReasoningToken, clearStreamingReasoning, setAgentStatus } = useUIStore();
+  const { appendTokenBatch, appendReasoningTokenBatch, clearStreaming, clearStreamingReasoning, setAgentStatus } = useUIStore();
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const mutation = useMutation({
@@ -46,6 +46,38 @@ export function useSendMessage() {
       if (!token) throw new Error('Not authenticated');
 
       abortControllerRef.current = new AbortController();
+
+      // 流式 token 本地缓冲 + rAF 节流：token / reasoning 先累积进缓冲，
+      // 每个动画帧最多 flush 一次到 store，把渲染频率压到 ≤60fps。
+      // 收尾事件（done / agent_error / 异常 / abort）会同步 flush 剩余缓冲，
+      // 避免丢失尾部 token；取消时也确保 rAF 句柄被回收，防止泄漏。
+      let tokenBuffer = '';
+      let reasoningBuffer = '';
+      let rafId: number | null = null;
+
+      const flush = () => {
+        if (rafId != null) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+        if (tokenBuffer) {
+          appendTokenBatch(sessionId, tokenBuffer);
+          tokenBuffer = '';
+        }
+        if (reasoningBuffer) {
+          appendReasoningTokenBatch(sessionId, reasoningBuffer);
+          reasoningBuffer = '';
+        }
+      };
+
+      const scheduleFlush = () => {
+        if (rafId != null) return;
+        rafId = requestAnimationFrame(() => {
+          rafId = null;
+          flush();
+        });
+      };
+
       try {
         const response = await apiPostStream(
           `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
@@ -69,10 +101,12 @@ export function useSendMessage() {
               setAgentStatus(sessionId, payload.agent, 'running');
               break;
             case 'token':
-              appendToken(sessionId, payload.content ?? '');
+              tokenBuffer += payload.content ?? '';
+              scheduleFlush();
               break;
             case 'reasoning':
-              appendReasoningToken(sessionId, payload.content ?? '');
+              reasoningBuffer += payload.content ?? '';
+              scheduleFlush();
               break;
             case 'tool_call':
               setAgentStatus(sessionId, payload.agent, 'tool_call');
@@ -81,15 +115,22 @@ export function useSendMessage() {
               setAgentStatus(sessionId, payload.agent, 'idle');
               break;
             case 'agent_error':
+              // 出错时先同步 flush，确保已收到的尾部 token 不丢失、不截断。
+              flush();
               setAgentStatus(sessionId, payload.agent, 'error');
               break;
             case 'done':
+              // 正常结束：先同步 flush 剩余缓冲，再清理流式状态。
+              flush();
               clearStreaming(sessionId);
               clearStreamingReasoning(sessionId);
               break;
           }
         }
       } finally {
+        // 兜底：流彻底结束（含 abort 抛出的 AbortError / 意外断流）时同步 flush
+        // 并回收 rAF 句柄，避免残留回调在清理后再次写入状态。
+        flush();
         abortControllerRef.current = null;
       }
 
