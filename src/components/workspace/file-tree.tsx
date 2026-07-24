@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Folder, ChevronRight, ChevronDown, File, Trash2, Pencil, Loader2 } from 'lucide-react';
+import { useIsFetching, useQueryClient } from '@tanstack/react-query';
+import { Folder, ChevronRight, ChevronDown, File, Trash2, Pencil, Loader2, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useWorkspace, useDeleteFile, useRenameFile } from '@/hooks/use-workspace';
 import { useUIStore } from '@/stores/ui-store';
@@ -20,12 +21,28 @@ function joinPath(parent: string, name: string): string {
 
 export function FileTree() {
   const { files, isLoading, error } = useWorkspace();
+  const queryClient = useQueryClient();
+  // 失效 ['workspace'] 会命中根目录与所有已展开子目录的查询（前缀匹配），
+  // 一次刷新拉到全部最新文件；任一在途时刷新图标旋转。
+  const isFetching = useIsFetching({ queryKey: ['workspace'] }) > 0;
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-10 items-center justify-between border-b px-3">
         <span className="text-xs font-medium text-muted-foreground">工作空间</span>
-        <UploadButton />
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            onClick={() => queryClient.invalidateQueries({ queryKey: ['workspace'] })}
+            title="刷新"
+            aria-label="刷新工作空间"
+          >
+            <RefreshCw className={cn('h-4 w-4', isFetching && 'animate-spin')} />
+          </Button>
+          <UploadButton />
+        </div>
       </div>
 
       <ScrollArea className="flex-1">

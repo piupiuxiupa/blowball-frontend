@@ -9,7 +9,13 @@ import { BinaryPlaceholder } from './binary-placeholder';
 import { OfficeViewer } from './office-viewer';
 import { Skeleton } from '@/components/ui/skeleton';
 
-export function FileRenderer() {
+interface FileRendererProps {
+  /** 外层「刷新」按钮 bump；强制重新加载当前文件。文本靠 query 失效重取，
+   * 二进制（图片/PDF/Office）靠它做缓存破坏/重挂载。 */
+  refreshKey?: number;
+}
+
+export function FileRenderer({ refreshKey }: FileRendererProps) {
   const activeFilePath = useUIStore((s) => s.activeFilePath);
   // Office files render through OnlyOffice (binary, via the download endpoint),
   // so we skip the text-content fetch for them — otherwise /content 400s with
@@ -40,13 +46,13 @@ export function FileRenderer() {
 
   // Route binary previewers by extension before falling back to text content.
   if (isOffice(ext)) {
-    return <OfficeViewer path={activeFilePath} />;
+    return <OfficeViewer path={activeFilePath} refreshKey={refreshKey} />;
   }
   if (isPdf(ext)) {
-    return <PdfViewer path={activeFilePath} />;
+    return <PdfViewer path={activeFilePath} refreshKey={refreshKey} />;
   }
   if (isImage(ext)) {
-    return <ImageViewer path={activeFilePath} />;
+    return <ImageViewer path={activeFilePath} refreshKey={refreshKey} />;
   }
 
   // If content came back as null and there is an error, treat as binary
@@ -61,5 +67,7 @@ export function FileRenderer() {
     return <MarkdownViewer content={content} />;
   }
 
-  return <CodeViewer content={content} language={ext} />;
+  // 向 CodeViewer 传入文件路径：用于扩展名→Monaco 语言解析与大文件回退。
+  // readOnly 由 CodeViewer 默认值（恒 true）作为单一来源控制。
+  return <CodeViewer content={content} path={activeFilePath} />;
 }

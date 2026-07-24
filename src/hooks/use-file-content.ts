@@ -40,11 +40,14 @@ export function getDownloadUrl(path: string): string {
 
 // getPreviewUrl returns the same endpoint as getDownloadUrl but with inline=1,
 // suitable for `<img src>`, PDF.js, and other browser-native preview elements.
-export function getPreviewUrl(path: string): string {
+// version（>0 时附加 v=N）用作缓存破坏：文件内容在服务端更新后，相同 URL 会被
+// 浏览器/中间层命中缓存，bump version 才能强制重新拉取最新内容。首次加载省略。
+export function getPreviewUrl(path: string, version?: number): string {
   const token = getToken();
   const params = new URLSearchParams();
   if (token) params.set('token', token);
   params.set('inline', '1');
+  if (version) params.set('v', String(version));
   return `${getApiBase()}/api/v1/workspace/files/download/${encodeURIComponent(path)}?${params.toString()}`;
 }
 

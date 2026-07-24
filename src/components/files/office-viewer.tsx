@@ -6,6 +6,9 @@ import { useOfficeConfig } from '@/hooks/use-office-config';
 
 interface OfficeViewerProps {
   path: string;
+  /** 由外层「刷新」按钮 bump：并入 EditorMount 的 key，触发重新挂载并重取配置，
+   * 让 OnlyOffice 用全新 document.key 重新转换（与组件内刷新按钮等价）。 */
+  refreshKey?: number;
 }
 
 // How long to wait for the editor's onAppReady before assuming it stalled.
@@ -25,7 +28,7 @@ const LOAD_TIMEOUT_MS = 20000;
 // path+nonce) so OnlyOffice never reuses a stale element/session across
 // documents — reusing it crashes the editor (blank screen). Each document gets
 // its own fresh mount + lifecycle.
-export function OfficeViewer({ path }: OfficeViewerProps) {
+export function OfficeViewer({ path, refreshKey = 0 }: OfficeViewerProps) {
   const [nonce, setNonce] = useState(0);
   return (
     <div className="flex h-full w-full flex-col">
@@ -36,7 +39,7 @@ export function OfficeViewer({ path }: OfficeViewerProps) {
         </Button>
       </div>
       <div className="relative flex-1">
-        <EditorMount key={`${path}::${nonce}`} path={path} nonce={nonce} />
+        <EditorMount key={`${path}::${nonce}::${refreshKey}`} path={path} nonce={nonce} />
       </div>
     </div>
   );

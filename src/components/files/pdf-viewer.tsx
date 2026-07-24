@@ -9,16 +9,18 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pd
 
 interface PdfViewerProps {
   path: string;
+  /** 刷新时 bump：附加为缓存破坏参数，URL 变化触发下方 useEffect 重新加载 PDF。 */
+  refreshKey?: number;
 }
 
-export function PdfViewer({ path }: PdfViewerProps) {
+export function PdfViewer({ path, refreshKey }: PdfViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [pdf, setPdf] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [pageNum, setPageNum] = useState(1);
   const [numPages, setNumPages] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const url = getPreviewUrl(path);
+  const url = getPreviewUrl(path, refreshKey);
 
   useEffect(() => {
     let cancelled = false;
