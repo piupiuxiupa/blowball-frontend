@@ -720,15 +720,17 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Build and sign an OnlyOffice editor config for a workspace office file.
-         * @description Returns a server-signed DocEditor config (`{server_url, config, token}`)
-         *     so the browser can open the file for editing in OnlyOffice. The OnlyOffice
-         *     secret lives only in the backend config and never reaches the browser; the
-         *     returned `token` is an HS256 JWT whose payload is `config`. `document.url`
+         * Build and sign OnlyOffice edit + view configs for a workspace office file.
+         * @description Returns server-signed DocEditor configs (`{server_url, edit, view}`, each
+         *     mode an `{config, token}` pair) so the browser can open the file in either
+         *     edit or view mode in OnlyOffice without a second round-trip. The OnlyOffice
+         *     secret lives only in the backend config and never reaches the browser; each
+         *     `token` is an HS256 JWT whose payload is that mode's `config`. `document.url`
          *     and `editorConfig.callbackUrl` point at the backend's internal origin and
-         *     embed the caller's JWT as a query `token`, and `document.key` is freshly
-         *     random so reopening always re-converts. Shares the workspace catch-all with
-         *     `/content`, dispatching on the trailing `/onlyoffice-config` suffix.
+         *     embed the caller's JWT as a query `token`; both modes share one freshly
+         *     random `document.key` so reopening always re-converts. Shares the workspace
+         *     catch-all with `/content`, dispatching on the trailing `/onlyoffice-config`
+         *     suffix.
          */
         get: {
             parameters: {
@@ -1148,28 +1150,44 @@ export interface components {
             skills: components["schemas"]["SkillEntry"][];
         };
         /**
-         * @description A server-signed OnlyOffice DocEditor config. The browser loads api.js
-         *     from `server_url` and instantiates `new DocsAPI.DocEditor(id,
-         *     {...config, token})`. The OnlyOffice secret never leaves the server —
-         *     `token` is an HS256 JWT whose payload is `config`, verifiable by the
-         *     DocumentServer with the same secret.
+         * @description Server-signed OnlyOffice DocEditor configs for both edit and view modes.
+         *     The browser loads api.js from `server_url` and instantiates
+         *     `new DocsAPI.DocEditor(id, {...config, token})` for whichever mode it
+         *     needs. The OnlyOffice secret never leaves the server — each `token` is
+         *     an HS256 JWT whose payload is that mode's `config`, verifiable by the
+         *     DocumentServer with the same secret. Because the token signs the whole
+         *     config, the frontend cannot switch modes by mutating a config in place;
+         *     it must use the pre-signed edit or view token. Both modes share one
+         *     freshly random `document.key` (per request).
          */
         OnlyOfficeConfigResponse: {
             /** @description Browser-facing DocumentServer origin (api.js is loaded from here). */
             server_url: string;
+            edit: components["schemas"]["OnlyOfficeModeConfig"];
+            view: components["schemas"]["OnlyOfficeModeConfig"];
+        };
+        /**
+         * @description One signed DocEditor config (edit or view). `config` is the editor
+         *     config object; `token` is the HS256 JWT signing exactly that `config`
+         *     with the OnlyOffice secret. The edit and view tokens are distinct.
+         */
+        OnlyOfficeModeConfig: {
             /**
-             * @description DocEditor config object. Contains `documentType` (word/cell/slide),
-             *     `document{fileType, key, title, url, permissions{edit:true,
-             *     download:true}}` and `editorConfig{mode:"edit", callbackUrl,
-             *     customization{forcesave:true}, user}`. `document.key` is freshly
-             *     random per request; `document.url` and `editorConfig.callbackUrl`
-             *     are rooted at the backend's internal origin and carry the user JWT
-             *     as a query `token`.
+             * @description DocEditor config object. `edit.config` carries `documentType`
+             *     (word/cell/slide), `document{fileType, key, title, url,
+             *     permissions{edit:true, download:true}}` and `editorConfig{mode:"edit",
+             *     callbackUrl, customization{forcesave:true}, user}`. `view.config` is
+             *     identical except `document.permissions.edit` is `false` and
+             *     `editorConfig{mode:"view", callbackUrl, user}` carries no
+             *     `customization.forcesave`. Both share the same `document.key`
+             *     (freshly random per request); `document.url` and
+             *     `editorConfig.callbackUrl` are rooted at the backend's internal origin
+             *     and carry the user JWT as a query `token`.
              */
             config: {
                 [key: string]: unknown;
             };
-            /** @description HS256 JWT signing `config` with the OnlyOffice secret. */
+            /** @description HS256 JWT signing this mode's `config` with the OnlyOffice secret; edit and view tokens differ. */
             token: string;
         };
         /**

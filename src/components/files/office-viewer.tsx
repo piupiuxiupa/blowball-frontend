@@ -15,44 +15,75 @@ interface OfficeViewerProps {
 const LOAD_TIMEOUT_MS = 20000;
 
 // Renders an office file (docx/xlsx/pptx, and legacy doc/xls/ppt) via a local or
-// remote OnlyOffice DocumentServer in EDIT mode, persisting saves back to the
-// workspace through the backend's save-callback endpoint.
+// remote OnlyOffice DocumentServer in EDIT or VIEW mode, persisting saves back
+// to the workspace through the backend's save-callback endpoint (saves only fire
+// in edit mode).
 //
 // All OnlyOffice config (secret, server_url, internal_backend) is owned by the
-// backend — this component just fetches a signed editor config and hands
-// {...config, token} to DocsAPI.DocEditor. Refresh re-fetches the config so the
-// backend mints a new random document.key, forcing OnlyOffice to re-convert
-// (never a stale cached document).
+// backend — this component fetches one signed response carrying BOTH an edit and
+// a view config (each with its own token), then hands the chosen mode's
+// {...config, token} to DocsAPI.DocEditor. OnlyOffice signs the whole config, so
+// switching modes uses the pre-signed token for that mode rather than mutating a
+// config in place. Refresh re-fetches so the backend mints a new random
+// document.key, forcing OnlyOffice to re-convert (never a stale cached document).
 //
-// Switching files (or pressing Refresh) remounts <EditorMount> (keyed by
-// path+nonce) so OnlyOffice never reuses a stale element/session across
+// Switching files, modes, or pressing Refresh remounts <EditorMount> (keyed by
+// path+mode+nonce) so OnlyOffice never reuses a stale element/session across
 // documents — reusing it crashes the editor (blank screen). Each document gets
 // its own fresh mount + lifecycle.
 export function OfficeViewer({ path, refreshKey = 0 }: OfficeViewerProps) {
   const [nonce, setNonce] = useState(0);
+  const [mode, setMode] = useState<OfficeEditorModeName>('edit');
   return (
     <div className="flex h-full w-full flex-col">
       <div className="flex items-center justify-between border-b px-3 py-1.5 text-xs text-muted-foreground">
-        <span className="truncate">OnlyOffice 编辑 · {path}</span>
-        <Button variant="ghost" size="sm" onClick={() => setNonce((n) => n + 1)}>
-          刷新
-        </Button>
+        <span className="truncate">
+          OnlyOffice {mode === 'edit' ? '编辑' : '只读'} · {path}
+        </span>
+        <div className="flex items-center gap-1">
+          <Button
+            variant={mode === 'edit' ? 'secondary' : 'ghost'}
+            size="sm"
+            onClick={() => setMode('edit')}
+          >
+            编辑
+          </Button>
+          <Button
+            variant={mode === 'view' ? 'secondary' : 'ghost'}
+            size="sm"
+            onClick={() => setMode('view')}
+          >
+            只读
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setNonce((n) => n + 1)}>
+            刷新
+          </Button>
+        </div>
       </div>
       <div className="relative flex-1">
-        <EditorMount key={`${path}::${nonce}::${refreshKey}`} path={path} nonce={nonce} />
+        <EditorMount
+          key={`${path}::${mode}::${nonce}::${refreshKey}`}
+          path={path}
+          nonce={nonce}
+          mode={mode}
+        />
       </div>
     </div>
   );
 }
 
+// Which of the two backend-signed configs to instantiate.
+type OfficeEditorModeName = 'edit' | 'view';
+
 interface EditorMountProps {
   path: string;
   nonce: number;
+  mode: OfficeEditorModeName;
 }
 
 // One OnlyOffice editor instance, fully isolated. Mounted fresh per document
 // (via the parent's key) and destroyed on unmount.
-function EditorMount({ path, nonce }: EditorMountProps) {
+function EditorMount({ path, nonce, mode }: EditorMountProps) {
   // useId() can contain ':' which breaks some internal lookups; sanitize.
   const editorId = 'oo-' + useId().replace(/[^a-zA-Z0-9]/g, '');
   const editorRef = useRef<OnlyOfficeEditorInstance | null>(null);
@@ -66,6 +97,11 @@ function EditorMount({ path, nonce }: EditorMountProps) {
     // Wait for the signed config before doing anything; the loading skeleton is
     // shown while data is absent.
     if (!data) return;
+    // Pick the pre-signed config + token for the requested mode. Both modes ship
+    // in one response, so switching is a remount with the other token — no extra
+    // round-trip, and no in-place config mutation (which would break the
+    // signature).
+    const { config, token } = data[mode];
     let cancelled = false;
     let settled = false;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -89,7 +125,7 @@ function EditorMount({ path, nonce }: EditorMountProps) {
       }
       if (cancelled) return;
 
-      setDocUrl(data.config.document.url);
+      setDocUrl(config.document.url);
 
       const mount = document.getElementById(editorId);
       const DocsAPI = window.DocsAPI;
@@ -103,8 +139,8 @@ function EditorMount({ path, nonce }: EditorMountProps) {
       }
       try {
         editorRef.current = new DocsAPI.DocEditor(editorId, {
-          ...data.config,
-          token: data.token,
+          ...config,
+          token,
           width: '100%',
           height: '100%',
           events: {
@@ -139,7 +175,7 @@ function EditorMount({ path, nonce }: EditorMountProps) {
       }
       editorRef.current = null;
     };
-  }, [data, editorId]);
+  }, [data, mode, editorId]);
 
   const errorMsg = queryError
     ? `获取编辑配置失败：${queryError instanceof Error ? queryError.message : String(queryError)}`

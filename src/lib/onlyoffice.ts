@@ -36,19 +36,30 @@ export interface OnlyOfficeConfig {
   editorConfig: {
     mode: 'view' | 'edit';
     callbackUrl: string;
-    customization: { forcesave: boolean };
+    // Present only in edit mode (forcesave); view mode omits customization.
+    customization?: { forcesave: boolean };
     user: { id: string; name: string };
   };
   [key: string]: unknown;
 }
 
-// Response from GET /api/v1/workspace/files/<path>/onlyoffice-config. The browser
-// loads api.js from server_url and instantiates DocsAPI.DocEditor(id,
-// {...config, token}).
-export interface OfficeEditorResponse {
-  server_url: string;
+// One signed {config, token} pair for a single editor mode (edit or view).
+export interface OfficeEditorMode {
   config: OnlyOfficeConfig;
   token: string;
+}
+
+// Response from GET /api/v1/workspace/files/<path>/onlyoffice-config. The backend
+// returns both edit and view configs (each with its own signature) so the browser
+// can open the file in either mode without a second round-trip: OnlyOffice signs
+// the whole config, so the frontend cannot switch modes by mutating a config in
+// place — it must use the pre-signed edit or view token. Both modes share one
+// random document.key (per request). The browser loads api.js from server_url
+// and instantiates DocsAPI.DocEditor(id, {...config, token}) for the chosen mode.
+export interface OfficeEditorResponse {
+  server_url: string;
+  edit: OfficeEditorMode;
+  view: OfficeEditorMode;
 }
 
 // fetchOfficeConfig asks the backend to build + sign the DocEditor config for a
