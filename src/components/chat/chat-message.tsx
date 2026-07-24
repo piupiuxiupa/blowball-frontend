@@ -23,7 +23,9 @@ export const ChatMessage = memo(function ChatMessage({ block }: ChatMessageProps
       <div
         className={cn(
           'flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
-          isUser ? 'bg-primary text-primary-foreground' : 'bg-muted'
+          isUser
+            ? 'bg-primary text-primary-foreground shadow-[0_4px_12px_-4px_rgba(255,159,10,0.7)]'
+            : 'glass text-foreground'
         )}
       >
         {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
@@ -31,11 +33,12 @@ export const ChatMessage = memo(function ChatMessage({ block }: ChatMessageProps
 
       <div
         className={cn(
-          'max-w-[80%] space-y-1 rounded-lg px-3 py-2 text-sm',
+          'max-w-[80%] space-y-1 rounded-2xl px-3.5 py-2.5 text-sm',
           isUser
-            ? 'bg-primary text-primary-foreground'
-            : 'bg-muted',
-          block.isError && 'border border-destructive/50 bg-destructive/10'
+            ? 'rounded-br-md bg-primary text-primary-foreground shadow-[inset_0_1px_0_0_rgba(255,255,255,0.45),0_8px_20px_-8px_rgba(255,159,10,0.65)]'
+            : block.isError
+              ? 'rounded-bl-md border border-destructive/40 bg-destructive/10 text-foreground backdrop-blur-md'
+              : 'glass rounded-bl-md text-foreground'
         )}
       >
         {!isUser && (
@@ -43,7 +46,7 @@ export const ChatMessage = memo(function ChatMessage({ block }: ChatMessageProps
         )}
 
         {block.reasoning && !isUser && (
-          <details className="rounded border border-muted-foreground/20 bg-muted/50 px-2 py-1">
+          <details className="rounded-xl border border-white/50 bg-white/40 px-2.5 py-1.5 backdrop-blur-md">
             <summary className="flex cursor-pointer list-none items-center gap-1 text-xs text-muted-foreground">
               <Lightbulb className="h-3 w-3" />
               <span>思考过程</span>
@@ -65,7 +68,7 @@ export const ChatMessage = memo(function ChatMessage({ block }: ChatMessageProps
             {block.toolCalls.map((tool, idx) => (
               <span
                 key={idx}
-                className="inline-flex items-center gap-1 rounded-md bg-background/80 px-2 py-0.5 text-xs text-muted-foreground"
+                className="glass-subtle inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs text-muted-foreground"
               >
                 <Wrench className="h-3 w-3" />
                 {tool}

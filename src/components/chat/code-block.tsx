@@ -76,7 +76,7 @@ export const CodeBlock = memo(function CodeBlock({ language, value, showLineNumb
   if (!canonical) {
     // 未注册语言：回退为可读、可复制的纯文本 <pre>，不报错、不中断渲染。
     return (
-      <pre className="m-0 overflow-auto rounded-md bg-muted/50 p-3 text-sm">
+      <pre className="m-0 overflow-auto rounded-xl bg-foreground/[0.04] p-3 text-sm">
         <code>{value}</code>
       </pre>
     );
@@ -86,7 +86,7 @@ export const CodeBlock = memo(function CodeBlock({ language, value, showLineNumb
       language={canonical}
       style={oneLight}
       PreTag="div"
-      className="rounded-md text-sm"
+      className="rounded-xl text-sm"
       showLineNumbers={showLineNumbers}
       customStyle={customStyle}
     >

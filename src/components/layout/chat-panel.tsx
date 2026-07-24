@@ -7,7 +7,7 @@ export function ChatPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-10 shrink-0 items-center border-b px-4 text-sm font-medium">
+      <div className="flex h-11 shrink-0 items-center border-b border-white/50 bg-white/20 px-4 text-sm font-medium backdrop-blur-sm">
         Agent 聊天
       </div>
 
@@ -21,7 +21,7 @@ export function ChatPanel() {
         )}
       </div>
 
-      <div className="border-t p-3">
+      <div className="border-t border-white/50 p-3">
         <MessageInput disabled={!activeSessionId} />
       </div>
     </div>

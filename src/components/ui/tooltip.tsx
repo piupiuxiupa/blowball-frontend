@@ -19,7 +19,7 @@ function Tooltip({ content, children }: TooltipProps) {
     >
       {children}
       {open && (
-        <div className="absolute bottom-full left-1/2 z-50 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md bg-primary px-2 py-1 text-xs text-primary-foreground shadow-md">
+        <div className="glass-strong absolute bottom-full left-1/2 z-50 mb-2 -translate-x-1/2 whitespace-nowrap rounded-full px-3 py-1 text-xs text-foreground shadow-lg">
           {content}
         </div>
       )}

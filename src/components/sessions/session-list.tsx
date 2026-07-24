@@ -12,8 +12,8 @@ export function SessionList() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-10 items-center justify-between border-b px-3">
-        <span className="text-xs font-medium text-muted-foreground">会话记录</span>
+      <div className="flex h-11 items-center justify-between border-b border-white/50 bg-white/20 px-3 backdrop-blur-sm">
+        <span className="text-xs font-semibold tracking-wide text-muted-foreground">会话记录</span>
         <Button
           variant="ghost"
           size="icon"

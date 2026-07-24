@@ -55,12 +55,21 @@ export function Resizer({ direction = 'horizontal', onResize, className }: Resiz
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
       className={cn(
-        'shrink-0 bg-border hover:bg-primary/30 active:bg-primary/50',
-        direction === 'horizontal'
-          ? 'w-1 cursor-col-resize'
-          : 'h-1 cursor-row-resize',
+        'group/resizer relative shrink-0 cursor-col-resize',
+        direction === 'horizontal' ? 'w-3 cursor-col-resize' : 'h-3 cursor-row-resize',
         className
       )}
-    />
+    >
+      {/* Hairline reveal on hover/active; transparent otherwise so the mesh shows through. */}
+      <span
+        className={cn(
+          'absolute rounded-full bg-foreground/0 transition-colors duration-200 ' +
+            'group-hover/resizer:bg-primary/60 group-active/resizer:bg-primary',
+          direction === 'horizontal'
+            ? 'left-1/2 top-1/2 h-10 w-px -translate-x-1/2 -translate-y-1/2'
+            : 'left-1/2 top-1/2 h-px w-10 -translate-x-1/2 -translate-y-1/2'
+        )}
+      />
+    </div>
   );
 }

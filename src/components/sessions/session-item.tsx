@@ -79,8 +79,10 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
         onClick={onClick}
         disabled={isDeleting || isEditing}
         className={cn(
-          'flex flex-1 items-center gap-2 rounded-md px-2 py-2 pr-14 text-left text-sm transition-colors',
-          isActive ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
+          'flex flex-1 items-center gap-2 rounded-xl px-2.5 py-2 pr-14 text-left text-sm transition-all',
+          isActive
+            ? 'bg-accent text-accent-foreground shadow-[inset_0_0_0_1px_rgba(255,159,10,0.35)]'
+            : 'hover:bg-foreground/[0.05]',
           isDeleting && 'opacity-50'
         )}
       >

@@ -15,17 +15,24 @@ export function AppLayout() {
   const [rightWidth, adjustRightWidth] = useResizableWidth(RIGHT_PANEL_KEY, 420, { min: 320, max: 720 });
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
-      <header className="flex h-12 shrink-0 items-center justify-between border-b px-4">
-        <div className="font-semibold">blowball</div>
+    <div className="flex h-screen flex-col gap-3 p-3">
+      {/* Floating glass header bar */}
+      <header className="glass flex h-12 shrink-0 items-center justify-between rounded-2xl px-4">
+        <div className="flex items-center gap-2 font-semibold tracking-tight">
+          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_2px_8px_-2px_rgba(255,159,10,0.7)]">
+            <span className="text-xs">b</span>
+          </span>
+          blowball
+        </div>
         <Button variant="ghost" size="sm" onClick={logout}>
           退出登录
         </Button>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      {/* Three glass panels with resizer-gutters between them */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         <aside
-          className="flex shrink-0 flex-col border-r bg-muted/30"
+          className="glass flex shrink-0 flex-col overflow-hidden rounded-2xl"
           style={{ width: leftWidth }}
         >
           <Sidebar />
@@ -33,14 +40,14 @@ export function AppLayout() {
 
         <Resizer onResize={adjustLeftWidth} />
 
-        <main className="flex min-w-0 flex-1 flex-col">
+        <main className="glass flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl">
           <CenterPanel />
         </main>
 
         <Resizer onResize={(delta) => adjustRightWidth(-delta)} />
 
         <aside
-          className="flex shrink-0 flex-col border-l bg-muted/30"
+          className="glass flex shrink-0 flex-col overflow-hidden rounded-2xl"
           style={{ width: rightWidth }}
         >
           <ChatPanel />

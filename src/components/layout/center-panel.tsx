@@ -22,7 +22,7 @@ export function CenterPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b px-4 text-sm text-muted-foreground">
+      <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-white/50 bg-white/20 px-4 text-sm text-muted-foreground backdrop-blur-sm">
         <span className="truncate">{activeFilePath ? activeFilePath : '未选择文件'}</span>
         <Button
           variant="ghost"

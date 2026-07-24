@@ -28,8 +28,8 @@ export function FileTree() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-10 items-center justify-between border-b px-3">
-        <span className="text-xs font-medium text-muted-foreground">工作空间</span>
+      <div className="flex h-11 items-center justify-between border-b border-white/50 bg-white/20 px-3 backdrop-blur-sm">
+        <span className="text-xs font-semibold tracking-wide text-muted-foreground">工作空间</span>
         <div className="flex items-center gap-1">
           <Button
             variant="ghost"
@@ -196,7 +196,7 @@ function FileNode({ entry, parentPath }: { entry: FileEntry; parentPath: string 
           <button
             onClick={() => !isEditing && setExpanded(!expanded)}
             disabled={isDeleting || isEditing}
-            className="flex w-full items-center gap-1 rounded-md px-2 py-1 pr-14 text-left text-sm hover:bg-muted"
+            className="flex w-full items-center gap-1 rounded-lg px-2 py-1.5 pr-14 text-left text-sm transition-all hover:bg-foreground/[0.05]"
           >
             {expanded ? (
               <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -210,7 +210,7 @@ function FileNode({ entry, parentPath }: { entry: FileEntry; parentPath: string 
         </div>
 
         {expanded && (
-          <div className="ml-5 border-l pl-1">
+          <div className="ml-5 border-l border-white/40 pl-1">
             <DirectoryChildren path={fullPath} />
           </div>
         )}
@@ -224,8 +224,10 @@ function FileNode({ entry, parentPath }: { entry: FileEntry; parentPath: string 
         onClick={() => setActiveFile(fullPath)}
         disabled={isDeleting || isEditing}
         className={cn(
-          'flex w-full items-center gap-2 rounded-md px-2 py-1 pr-14 text-left text-sm transition-colors',
-          isActive ? 'bg-accent text-accent-foreground' : 'hover:bg-muted',
+          'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 pr-14 text-left text-sm transition-all',
+          isActive
+            ? 'bg-accent text-accent-foreground shadow-[inset_0_0_0_1px_rgba(255,159,10,0.35)]'
+            : 'hover:bg-foreground/[0.05]',
           isDeleting && 'opacity-50'
         )}
       >

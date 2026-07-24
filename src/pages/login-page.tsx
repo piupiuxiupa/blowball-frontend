@@ -29,9 +29,12 @@ export function LoginPage() {
     : null;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-muted p-4">
-      <div className="w-full max-w-sm rounded-lg border bg-background p-8 shadow-sm">
-        <div className="mb-6 text-center">
+    <div className="flex min-h-screen items-center justify-center p-6">
+      <div className="glass w-full max-w-sm rounded-3xl p-8">
+        <div className="mb-6 flex flex-col items-center text-center">
+          <span className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-[inset_0_1px_0_0_rgba(255,255,255,0.5),0_10px_24px_-8px_rgba(255,159,10,0.7)]">
+            <span className="text-lg font-semibold">b</span>
+          </span>
           <h1 className="text-2xl font-semibold tracking-tight">blowball</h1>
           <p className="text-sm text-muted-foreground">登录到您的工作区</p>
         </div>
@@ -64,12 +67,12 @@ export function LoginPage() {
           </div>
 
           {errorMessage && (
-            <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+            <div className="rounded-2xl border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive backdrop-blur-md">
               {errorMessage}
             </div>
           )}
 
-          <Button type="submit" className="w-full" disabled={isLoggingIn}>
+          <Button type="submit" className="w-full" size="lg" disabled={isLoggingIn}>
             {isLoggingIn ? '登录中...' : '登录'}
           </Button>
         </form>

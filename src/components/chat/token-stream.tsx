@@ -88,11 +88,11 @@ export const TokenStream = memo(function TokenStream({ agent, content, reasoning
 
   return (
     <div className="flex gap-3">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
+      <div className="glass flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-foreground">
         <Bot className="h-4 w-4" />
       </div>
 
-      <div className="max-w-[80%] space-y-1 rounded-lg bg-muted px-3 py-2 text-sm">
+      <div className="glass max-w-[80%] space-y-1 rounded-2xl rounded-bl-md px-3.5 py-2.5 text-sm">
         <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
           <span>{agent}</span>
           {status === 'running' && <Loader2 className="h-3 w-3 animate-spin" />}
@@ -101,7 +101,7 @@ export const TokenStream = memo(function TokenStream({ agent, content, reasoning
         </div>
 
         {reasoning && (
-          <details className="rounded border border-muted-foreground/20 bg-muted/50 px-2 py-1" open>
+          <details className="rounded-xl border border-white/50 bg-white/40 px-2.5 py-1.5 backdrop-blur-md" open>
             <summary className="flex cursor-pointer list-none items-center gap-1 text-xs text-muted-foreground">
               <Lightbulb className="h-3 w-3" />
               <span>思考过程</span>
