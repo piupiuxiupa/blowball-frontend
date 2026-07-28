@@ -94,6 +94,34 @@ export async function apiGet<T>(
   return handleResponse<T>(response);
 }
 
+// GET against the agent role base. The agent role serves the streaming message
+// turn and the MCP tool catalogue (see the role split above), so /api/v1/mcp/tools
+// must route through getAgentBase() in a split deployment; in the monolith the two
+// bases are equal, so this is identical to apiGet there.
+export async function apiGetAgent<T>(
+  path: string,
+  options: { params?: Record<string, string | number | undefined>; token?: string | null } = {}
+): Promise<T> {
+  const url = new URL(getAgentBase() + path);
+  if (options.params) {
+    Object.entries(options.params).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') {
+        url.searchParams.set(key, String(value));
+      }
+    });
+  }
+
+  const token = options.token ?? getToken();
+  const response = await fetch(url.toString(), {
+    headers: {
+      Accept: 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
+  return handleResponse<T>(response);
+}
+
 export async function apiPost<T>(
   path: string,
   options: { body?: unknown; token?: string | null } = {}
@@ -242,3 +270,8 @@ export type RenameRequest =
   paths['/api/v1/workspace/files/{path}']['put']['requestBody']['content']['application/json'];
 export type RenameResponse =
   paths['/api/v1/workspace/files/{path}']['put']['responses']['200']['content']['application/json'];
+export type MCPToolsResponse =
+  paths['/api/v1/mcp/tools']['get']['responses']['200']['content']['application/json'];
+export type MCPTool = NonNullable<MCPToolsResponse['tools']>[number];
+export type SkillsResponse = paths['/api/v1/skills']['get']['responses']['200']['content']['application/json'];
+export type SkillEntry = NonNullable<SkillsResponse['skills']>[number];
