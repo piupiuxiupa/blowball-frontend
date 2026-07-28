@@ -1,7 +1,8 @@
 import { memo } from 'react';
-import { User, Bot, Wrench, Lightbulb } from 'lucide-react';
+import { User, Bot, Lightbulb } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from './markdown-renderer';
+import { ToolCallBubble } from './tool-call-bubble';
 
 interface ChatMessageProps {
   block: {
@@ -64,15 +65,9 @@ export const ChatMessage = memo(function ChatMessage({ block }: ChatMessageProps
         )}
 
         {block.toolCalls.length > 0 && (
-          <div className="flex flex-wrap gap-1 pt-1">
+          <div className="space-y-1.5 pt-1">
             {block.toolCalls.map((tool, idx) => (
-              <span
-                key={idx}
-                className="glass-subtle inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs text-muted-foreground"
-              >
-                <Wrench className="h-3 w-3" />
-                {tool}
-              </span>
+              <ToolCallBubble key={idx} raw={tool} />
             ))}
           </div>
         )}
