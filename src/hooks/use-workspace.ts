@@ -5,12 +5,16 @@ import { useUIStore } from '@/stores/ui-store';
 
 export function useWorkspace(path?: string) {
   const queryClient = useQueryClient();
+  // 是否包含隐藏文件由文件树头部按钮控制，并入 queryKey 与请求参数：切换时会以新的
+  // include_hidden 值重新拉取文件列表。后端默认 exclude 隐藏条目（名字以「.」开头），
+  // 因此必须显式传 include_hidden=true 才能拿到，纯前端过滤无效。
+  const includeHidden = useUIStore((s) => s.showHiddenFiles);
 
   const filesQuery = useQuery({
-    queryKey: ['workspace', path ?? ''],
+    queryKey: ['workspace', path ?? '', { hidden: includeHidden }],
     queryFn: () =>
       apiGet<FileListResponse>('/api/v1/workspace/files', {
-        params: { path: path || undefined },
+        params: { path: path || undefined, include_hidden: includeHidden ? 'true' : 'false' },
       }),
   });
 

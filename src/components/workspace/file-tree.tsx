@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useIsFetching, useQueryClient } from '@tanstack/react-query';
-import { Folder, ChevronRight, ChevronDown, File, Trash2, Pencil, Loader2, RefreshCw } from 'lucide-react';
+import { Folder, ChevronRight, ChevronDown, File, Trash2, Pencil, Loader2, RefreshCw, Eye, EyeOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useWorkspace, useDeleteFile, useRenameFile } from '@/hooks/use-workspace';
 import { useUIStore } from '@/stores/ui-store';
@@ -22,6 +22,8 @@ function joinPath(parent: string, name: string): string {
 export function FileTree() {
   const { files, isLoading, error } = useWorkspace();
   const queryClient = useQueryClient();
+  const showHiddenFiles = useUIStore((s) => s.showHiddenFiles);
+  const toggleShowHiddenFiles = useUIStore((s) => s.toggleShowHiddenFiles);
   // 失效 ['workspace'] 会命中根目录与所有已展开子目录的查询（前缀匹配），
   // 一次刷新拉到全部最新文件；任一在途时刷新图标旋转。
   const isFetching = useIsFetching({ queryKey: ['workspace'] }) > 0;
@@ -31,6 +33,17 @@ export function FileTree() {
       <div className="flex h-11 items-center justify-between border-b border-white/50 bg-white/20 px-3 backdrop-blur-sm">
         <span className="text-xs font-semibold tracking-wide text-muted-foreground">工作空间</span>
         <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            onClick={toggleShowHiddenFiles}
+            title={showHiddenFiles ? '隐藏隐藏文件' : '显示隐藏文件'}
+            aria-label={showHiddenFiles ? '隐藏隐藏文件' : '显示隐藏文件'}
+            aria-pressed={showHiddenFiles}
+          >
+            {showHiddenFiles ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -69,6 +82,7 @@ export function FileTree() {
 }
 
 function FileNodeList({ entries, parentPath }: { entries: FileEntry[]; parentPath: string }) {
+  // 隐藏文件的过滤由接口侧 include_hidden 控制（见 useWorkspace），此处直接渲染全部返回项。
   return (
     <div className="space-y-0.5">
       {entries.map((entry) => (
