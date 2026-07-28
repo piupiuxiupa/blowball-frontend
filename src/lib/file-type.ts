@@ -14,6 +14,10 @@ export function isPdf(ext: string): boolean {
   return ext === 'pdf';
 }
 
+export function isHtml(ext: string): boolean {
+  return ext === 'html' || ext === 'htm' || ext === 'xhtml';
+}
+
 export function isWord(ext: string): boolean {
   return ext === 'docx' || ext === 'doc';
 }

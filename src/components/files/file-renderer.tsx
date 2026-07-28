@@ -1,7 +1,8 @@
 import { useUIStore } from '@/stores/ui-store';
 import { useFileContent } from '@/hooks/use-file-content';
-import { getFileExtension, isImage, isMarkdown, isPdf, isOffice } from '@/lib/file-type';
+import { getFileExtension, isImage, isMarkdown, isPdf, isOffice, isHtml } from '@/lib/file-type';
 import { MarkdownViewer } from './markdown-viewer';
+import { HtmlViewer } from './html-viewer';
 import { CodeViewer } from './code-viewer';
 import { ImageViewer } from './image-viewer';
 import { PdfViewer } from './pdf-viewer';
@@ -65,6 +66,11 @@ export function FileRenderer({ refreshKey }: FileRendererProps) {
 
   if (isMarkdown(ext)) {
     return <MarkdownViewer content={content} />;
+  }
+
+  // HTML 直接在中间区域渲染（iframe 预览），可切回源码查看。
+  if (isHtml(ext)) {
+    return <HtmlViewer content={content} path={activeFilePath} />;
   }
 
   // 向 CodeViewer 传入文件路径：用于扩展名→Monaco 语言解析与大文件回退。
