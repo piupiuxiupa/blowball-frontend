@@ -27,7 +27,8 @@ export function SessionList() {
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="p-2">
+        {/* space-y-1：每个会话项是独立圆角框，给选中态/悬停态之间留出呼吸间距，避免色块紧贴。 */}
+        <div className="space-y-1 p-2">
           {isLoading && (
             <div className="space-y-2">
               <Skeleton className="h-10 w-full" />
