@@ -35,6 +35,30 @@ export function useSendMessage() {
   const { appendTokenBatch, appendReasoningTokenBatch, clearStreaming, clearStreamingReasoning, setAgentStatus } = useUIStore();
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // 收尾重拉：助手整段回复在流式期间只存在于 streamingTokens，并不在消息缓存里。
+  // `done` 事件可能早于后端把这一轮写库到达——若此时立刻清空流式缓冲，回复会在
+  // 历史重取完成前消失；重取若因写入延迟返回空/旧数据，整个聊天区会暂时为空，
+  // 直到刷新页面才会恢复。这里反复重拉持久化历史，直到消息数超过发送前快照
+  // （说明这一轮已落库）再清空流式状态；多次仍未增长则兜底清空，避免流式尾巴残留。
+  // reconcile 期间 mutation 仍处于 pending，可阻挡新一轮发送，避免与下一次流式写入竞态。
+  const reconcileHistory = async (sessionId: string) => {
+    const queryKey = ['messages', sessionId];
+    // 此刻消息缓存里还带着 onMutate 写入的乐观用户消息，故 baseline = 发送前条数 + 1。
+    const baseline = queryClient.getQueryData<SessionMessagesResponse>(queryKey)?.messages?.length ?? 0;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        await queryClient.refetchQueries({ queryKey });
+      } catch {
+        // 单次重拉失败不致命，下一轮继续尝试。
+      }
+      const after = queryClient.getQueryData<SessionMessagesResponse>(queryKey)?.messages?.length ?? 0;
+      if (after > baseline) break;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    clearStreaming(sessionId);
+    clearStreamingReasoning(sessionId);
+  };
+
   const mutation = useMutation({
     mutationFn: async ({
       sessionId,
@@ -120,10 +144,9 @@ export function useSendMessage() {
               setAgentStatus(sessionId, payload.agent, 'error');
               break;
             case 'done':
-              // 正常结束：先同步 flush 剩余缓冲，再清理流式状态。
+              // 仅同步 flush 剩余缓冲；流式状态的清空交给流结束后的 reconcileHistory，
+              // 由它确认这一轮已落库后再清，避免回复在历史重取前消失。
               flush();
-              clearStreaming(sessionId);
-              clearStreamingReasoning(sessionId);
               break;
           }
         }
@@ -134,8 +157,9 @@ export function useSendMessage() {
         abortControllerRef.current = null;
       }
 
-      clearStreaming(sessionId);
-      clearStreamingReasoning(sessionId);
+      // 流正常结束后收尾：重拉确认落库再清空流式缓冲（见 reconcileHistory 注释）。
+      // 注意：abort 路径会抛出 AbortError，跳过此处，流式状态由 abort() 自行清理。
+      await reconcileHistory(sessionId);
     },
     onMutate: async ({ sessionId, content }) => {
       const queryKey = ['messages', sessionId];
