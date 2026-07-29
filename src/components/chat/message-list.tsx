@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useMessages } from '@/hooks/use-messages';
-import { useUIStore } from '@/stores/ui-store';
+import { useUIStore, type StreamingSegment } from '@/stores/ui-store';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
 import { ChatMessage } from './chat-message';
-import { TokenStream } from './token-stream';
+import { AgentMessage } from './agent-message';
 import type { Message } from '@/lib/api';
 
 interface MessageBlock {
@@ -15,14 +16,13 @@ interface MessageBlock {
   content: string;
   reasoning?: string;
   toolCalls: string[];
-  isStreaming?: boolean;
   isError?: boolean;
 }
 
-// 虚拟列表的单个条目：已完成消息块，或流式中的尾部 TokenStream。
+// 虚拟列表的单个条目：已完成消息块，或流式中的某个 agent 段（尾部按段映射为 N 个 item）。
 type ListItem =
   | { kind: 'block'; block: MessageBlock }
-  | { kind: 'streaming' };
+  | { kind: 'streaming'; segment: StreamingSegment };
 
 function groupMessages(messages: Message[]): MessageBlock[] {
   const blocks: MessageBlock[] = [];
@@ -156,19 +156,24 @@ function groupMessagesWithCache(
   return next;
 }
 
+// 稳定的空数组：会话无流式段时返回同一引用，避免每次渲染产生新数组触发无限重渲染。
+const EMPTY_SEGMENTS: StreamingSegment[] = [];
+
+// 是否为「裸 Confucius」助手条目（块或段）。用于收紧相邻裸块上边距（design D4）。
+function isBareConfuciusItem(item: ListItem): boolean {
+  if (item.kind === 'block') {
+    return item.block.role === 'assistant' && item.block.agent === 'Confucius';
+  }
+  return item.segment.agent === 'Confucius';
+}
+
 const SCROLL_THRESHOLD = 80;
 
 export function MessageList() {
   const activeSessionId = useUIStore((s) => s.activeSessionId);
   const { data, isLoading } = useMessages(activeSessionId);
-  const streamingText = useUIStore((s) =>
-    activeSessionId ? s.streamingTokens[activeSessionId] ?? '' : ''
-  );
-  const streamingReasoning = useUIStore((s) =>
-    activeSessionId ? s.streamingReasoningTokens[activeSessionId] ?? '' : ''
-  );
-  const agentStatus = useUIStore((s) =>
-    activeSessionId ? s.agentStatus[activeSessionId] : null
+  const streamingSegments = useUIStore((s) =>
+    activeSessionId ? s.streamingSegments[activeSessionId] ?? EMPTY_SEGMENTS : EMPTY_SEGMENTS
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
@@ -186,16 +191,20 @@ export function MessageList() {
     return groupMessagesWithCache(messages, blockCacheRef.current);
   }, [messages, activeSessionId]);
 
-  const isStreaming =
-    !!streamingText ||
-    !!streamingReasoning ||
-    agentStatus?.status === 'running' ||
-    agentStatus?.status === 'tool_call';
+  // 流式进行中 = 任一活动段处于 running / tool_call。
+  // 本轮已结束段（idle / error）在 reconcile 清空前仍留在尾部，按其折叠/展开形态渲染。
+  const isStreaming = streamingSegments.some(
+    (seg) => seg.status === 'running' || seg.status === 'tool_call'
+  );
 
-  // 虚拟列表条目：已完成消息块 + 流式尾部作为最后一个 item，保证滚动到底与渲染一致。
+  // 虚拟列表条目：已完成消息块 + 尾部按 streamingSegments 映射的 N 个流式 item
+  // （每段一个，key 用段 id，保证段追加时不错位/重挂载）。
   const items = useMemo<ListItem[]>(
-    () => [...blocks.map((block) => ({ kind: 'block' as const, block })), ...(isStreaming ? [{ kind: 'streaming' as const }] : [])],
-    [blocks, isStreaming],
+    () => [
+      ...blocks.map((block) => ({ kind: 'block' as const, block })),
+      ...streamingSegments.map((segment) => ({ kind: 'streaming' as const, segment })),
+    ],
+    [blocks, streamingSegments]
   );
 
   const rowVirtualizer = useVirtualizer({
@@ -250,12 +259,12 @@ export function MessageList() {
         scrollRafRef.current = null;
       }
     };
-    // 故意不把 streamingText 放进依赖：token 高频更新时只在 rAF 里读一次 DOM，
+    // 故意不把 streamingSegments 放进依赖：token 高频更新时只在 rAF 里读一次 DOM，
     // 避免每个 token 都触发 effect 和强制同步布局。
     // isStreaming 用于捕获「流式结束」时机：结束时贴底几帧，
     // 随后 onSettled 的 invalidate 重拉取（messages.length 变化）会再次贴底，
     // 让持久化的助手消息加载后滚动到视口。
-  }, [messages.length, activeSessionId, agentStatus?.status, isStreaming]);
+  }, [messages.length, activeSessionId, isStreaming]);
 
   // 流式进行中时持续跟随到底：每帧检查是否仍接近底部（用户上滑则停止跟随），
   // 配合虚拟列表的动态高度测量，保证流式尾部始终可见。rAF 天然对齐绘制。
@@ -292,9 +301,14 @@ export function MessageList() {
         >
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const item = items[virtualRow.index];
+            // 相邻裸 Confucius 块收紧上边距，使其读作一篇连贯文本（design D4）。
+            const tightTop =
+              virtualRow.index > 0 &&
+              isBareConfuciusItem(item) &&
+              isBareConfuciusItem(items[virtualRow.index - 1]);
             return (
               <div
-                key={item.kind === 'block' ? item.block.id : 'streaming'}
+                key={item.kind === 'block' ? item.block.id : item.segment.id}
                 data-index={virtualRow.index}
                 ref={rowVirtualizer.measureElement}
                 style={{
@@ -305,15 +319,20 @@ export function MessageList() {
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
               >
-                <div className="py-2">
+                <div className={cn(tightTop ? 'pb-2 pt-0' : 'py-2')}>
                   {item.kind === 'block' ? (
                     <ChatMessage block={item.block} />
                   ) : (
-                    <TokenStream
-                      agent={agentStatus?.agent || 'Agent'}
-                      content={streamingText}
-                      reasoning={streamingReasoning}
-                      status={agentStatus?.status || 'running'}
+                    <AgentMessage
+                      agent={item.segment.agent}
+                      role="assistant"
+                      content={item.segment.content}
+                      reasoning={item.segment.reasoning}
+                      toolCalls={item.segment.toolCalls}
+                      status={item.segment.status}
+                      isLive={
+                        item.segment.status === 'running' || item.segment.status === 'tool_call'
+                      }
                     />
                   )}
                 </div>

@@ -1,5 +1,5 @@
-import { memo, useMemo } from 'react';
-import { Wrench } from 'lucide-react';
+import { memo, useMemo, useState } from 'react';
+import { ChevronDown, Wrench } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface ToolArg {
@@ -113,23 +113,56 @@ function formatValue(value: unknown): { text: string; block: boolean } {
 /**
  * 把 tool_call 的 content（通常是 JSON）解析成「工具名 + 参数键值」，
  * 以一张玻璃质感卡片呈现，替代直接堆原始 JSON 文本。
+ *
+ * 默认折叠：仅显示「工具调用 · 名字」头部，点击展开查看参数，避免长参数列表
+ * 撑开正文（尤其 Confucius 连续的 invoke_* 调用）。无参数的工具调用不提供展开。
  */
 export const ToolCallBubble = memo(function ToolCallBubble({ raw }: { raw: string }) {
   const { name, args } = useMemo(() => parseToolCall(raw), [raw]);
+  const [collapsed, setCollapsed] = useState(true);
+  const hasArgs = args.length > 0;
+
+  const headerLabel = (
+    <>
+      <Wrench className="h-3 w-3 shrink-0" />
+      <span>工具调用</span>
+      {name && (
+        <>
+          <span className="text-foreground/40">·</span>
+          <span className="truncate font-mono text-foreground">{name}</span>
+        </>
+      )}
+    </>
+  );
 
   return (
     <div className="overflow-hidden rounded-xl border border-white/50 bg-white/40 backdrop-blur-md">
-      <div className="flex items-center gap-1.5 border-b border-white/40 px-3 py-1.5 text-xs font-medium text-muted-foreground">
-        <Wrench className="h-3 w-3 shrink-0" />
-        <span>工具调用</span>
-        {name && (
-          <>
-            <span className="text-foreground/40">·</span>
-            <span className="truncate font-mono text-foreground">{name}</span>
-          </>
-        )}
-      </div>
-      {args.length > 0 ? (
+      {hasArgs ? (
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          aria-expanded={!collapsed}
+          className={cn(
+            'flex w-full cursor-pointer items-center gap-1.5 px-3 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-black/[0.03]',
+            !collapsed && 'border-b border-white/40'
+          )}
+        >
+          {headerLabel}
+          <ChevronDown
+            className={cn(
+              'ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+              !collapsed && 'rotate-180'
+            )}
+          />
+        </button>
+      ) : (
+        <div className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted-foreground">
+          {headerLabel}
+          <span className="ml-auto text-muted-foreground/70">无参数</span>
+        </div>
+      )}
+
+      {hasArgs && !collapsed && (
         <dl className="space-y-1.5 px-3 py-2">
           {args.map(({ key, value }) => {
             const { text, block } = formatValue(value);
@@ -150,8 +183,6 @@ export const ToolCallBubble = memo(function ToolCallBubble({ raw }: { raw: strin
             );
           })}
         </dl>
-      ) : (
-        <div className="px-3 py-2 text-xs text-muted-foreground">无参数</div>
       )}
     </div>
   );

@@ -32,14 +32,21 @@ function buildOptimisticUserMessage(sessionId: string, content: string, messages
 export function useSendMessage() {
   const queryClient = useQueryClient();
   const { token } = useAuthStore();
-  const { appendTokenBatch, appendReasoningTokenBatch, clearStreaming, clearStreamingReasoning, setAgentStatus } = useUIStore();
+  const {
+    startAgentSegment,
+    appendSegmentContent,
+    appendSegmentReasoning,
+    pushSegmentToolCall,
+    setSegmentStatus,
+    clearStreamingSegments,
+  } = useUIStore();
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // 收尾重拉：助手整段回复在流式期间只存在于 streamingTokens，并不在消息缓存里。
-  // `done` 事件可能早于后端把这一轮写库到达——若此时立刻清空流式缓冲，回复会在
+  // 收尾重拉：助手整段回复在流式期间只存在于 streamingSegments，并不在消息缓存里。
+  // `done` 事件可能早于后端把这一轮写库到达——若此时立刻清空流式分段，回复会在
   // 历史重取完成前消失；重取若因写入延迟返回空/旧数据，整个聊天区会暂时为空，
   // 直到刷新页面才会恢复。这里反复重拉持久化历史，直到消息数超过发送前快照
-  // （说明这一轮已落库）再清空流式状态；多次仍未增长则兜底清空，避免流式尾巴残留。
+  // （说明这一轮已落库）再清空流式分段；多次仍未增长则兜底清空，避免流式尾巴残留。
   // reconcile 期间 mutation 仍处于 pending，可阻挡新一轮发送，避免与下一次流式写入竞态。
   const reconcileHistory = async (sessionId: string) => {
     const queryKey = ['messages', sessionId];
@@ -55,8 +62,7 @@ export function useSendMessage() {
       if (after > baseline) break;
       await new Promise((resolve) => setTimeout(resolve, 300));
     }
-    clearStreaming(sessionId);
-    clearStreamingReasoning(sessionId);
+    clearStreamingSegments(sessionId);
   };
 
   const mutation = useMutation({
@@ -73,24 +79,34 @@ export function useSendMessage() {
 
       // 流式 token 本地缓冲 + rAF 节流：token / reasoning 先累积进缓冲，
       // 每个动画帧最多 flush 一次到 store，把渲染频率压到 ≤60fps。
+      // 缓冲按 agent 分桶（design D2）：flush 时把每个 agent 的串追加到其活动段，
+      // 即便后端未来并行/交错输出多 agent 也不会串段；串行回合下退化为单条目。
       // 收尾事件（done / agent_error / 异常 / abort）会同步 flush 剩余缓冲，
       // 避免丢失尾部 token；取消时也确保 rAF 句柄被回收，防止泄漏。
-      let tokenBuffer = '';
-      let reasoningBuffer = '';
+      let tokenBuffers: Record<string, string> = {};
+      let reasoningBuffers: Record<string, string> = {};
       let rafId: number | null = null;
 
-      const flush = () => {
+      // 回收待执行的 rAF 句柄，避免 abort 后残留回调写入状态。
+      const cancelPendingFlush = () => {
         if (rafId != null) {
           cancelAnimationFrame(rafId);
           rafId = null;
         }
-        if (tokenBuffer) {
-          appendTokenBatch(sessionId, tokenBuffer);
-          tokenBuffer = '';
+      };
+
+      const flush = () => {
+        cancelPendingFlush();
+        // 取出并重置缓冲（闭包绑定，后续 token 写入新对象），再按 agent 追加到活动段。
+        const tokens = tokenBuffers;
+        const reasoning = reasoningBuffers;
+        tokenBuffers = {};
+        reasoningBuffers = {};
+        for (const agent in tokens) {
+          if (tokens[agent]) appendSegmentContent(sessionId, agent, tokens[agent]);
         }
-        if (reasoningBuffer) {
-          appendReasoningTokenBatch(sessionId, reasoningBuffer);
-          reasoningBuffer = '';
+        for (const agent in reasoning) {
+          if (reasoning[agent]) appendSegmentReasoning(sessionId, agent, reasoning[agent]);
         }
       };
 
@@ -122,42 +138,60 @@ export function useSendMessage() {
 
           switch (payload.type) {
             case 'agent_start':
-              setAgentStatus(sessionId, payload.agent, 'running');
+              // push 新段、置 running。活动段即数组末尾。
+              startAgentSegment(sessionId, payload.agent);
               break;
             case 'token':
-              tokenBuffer += payload.content ?? '';
-              scheduleFlush();
+              // 按 agent 累积进缓冲，下一帧 flush 时追加到该 agent 活动段。
+              // 若 token 先于 agent_start 到达，appendSegmentContent 会按事件 agent 惰性建段。
+              if (payload.content) {
+                tokenBuffers[payload.agent] = (tokenBuffers[payload.agent] ?? '') + payload.content;
+                scheduleFlush();
+              }
               break;
             case 'reasoning':
-              reasoningBuffer += payload.content ?? '';
-              scheduleFlush();
+              if (payload.content) {
+                reasoningBuffers[payload.agent] =
+                  (reasoningBuffers[payload.agent] ?? '') + payload.content;
+                scheduleFlush();
+              }
               break;
             case 'tool_call':
-              setAgentStatus(sessionId, payload.agent, 'tool_call');
+              // 立即落段（不经节流缓冲）：记入活动段 toolCalls 并置 tool_call 状态。
+              pushSegmentToolCall(sessionId, payload.agent, payload.content ?? '');
               break;
             case 'agent_end':
-              setAgentStatus(sessionId, payload.agent, 'idle');
+              // 先 flush 该 agent 的待落缓冲，再置 idle——否则置 idle 后待 flush 的 token
+              // 会因找不到活动段而被惰性建段，产生重复的孤立 running 段（与 agent_error 同理）。
+              flush();
+              setSegmentStatus(sessionId, payload.agent, 'idle');
               break;
             case 'agent_error':
-              // 出错时先同步 flush，确保已收到的尾部 token 不丢失、不截断。
+              // 出错时先同步 flush，确保已收到的尾部 token 不丢失、不截断，再置段 error。
               flush();
-              setAgentStatus(sessionId, payload.agent, 'error');
+              setSegmentStatus(sessionId, payload.agent, 'error');
               break;
             case 'done':
-              // 仅同步 flush 剩余缓冲；流式状态的清空交给流结束后的 reconcileHistory，
+              // 仅同步 flush 剩余缓冲；流式分段的清空交给流结束后的 reconcileHistory，
               // 由它确认这一轮已落库后再清，避免回复在历史重取前消失。
               flush();
               break;
           }
         }
       } finally {
-        // 兜底：流彻底结束（含 abort 抛出的 AbortError / 意外断流）时同步 flush
-        // 并回收 rAF 句柄，避免残留回调在清理后再次写入状态。
-        flush();
+        // abort 路径：abort() 已清空分段，这里仅回收 rAF 句柄、丢弃缓冲——
+        // 若仍 flush，缓冲里的尾部 token 会被惰性建成孤立 running 段，短暂闪现已取消的内容。
+        // 正常结束 / 出错：同步 flush 剩余缓冲，避免丢失尾部 token。
+        const aborted = abortControllerRef.current?.signal.aborted ?? false;
+        if (aborted) {
+          cancelPendingFlush();
+        } else {
+          flush();
+        }
         abortControllerRef.current = null;
       }
 
-      // 流正常结束后收尾：重拉确认落库再清空流式缓冲（见 reconcileHistory 注释）。
+      // 流正常结束后收尾：重拉确认落库再清空流式分段（见 reconcileHistory 注释）。
       // 注意：abort 路径会抛出 AbortError，跳过此处，流式状态由 abort() 自行清理。
       await reconcileHistory(sessionId);
     },
@@ -173,7 +207,9 @@ export function useSendMessage() {
       return { previous };
     },
     onError: (_err, { sessionId }, context) => {
-      setAgentStatus(sessionId, 'system', 'error');
+      // 请求级失败（网络/鉴权等，非单 agent 的 agent_error 事件）：回滚乐观消息，
+      // 并清空可能残留的孤立流式分段——本轮无有效回合，不应留下半截 agent 输出。
+      clearStreamingSegments(sessionId);
       if (context?.previous) {
         queryClient.setQueryData(['messages', sessionId], context.previous);
       }
@@ -186,9 +222,8 @@ export function useSendMessage() {
 
   const abort = (sessionId: string) => {
     abortControllerRef.current?.abort();
-    clearStreaming(sessionId);
-    clearStreamingReasoning(sessionId);
-    setAgentStatus(sessionId, 'system', 'idle');
+    // 取消本轮：丢弃本地流式分段（回合已中止，部分输出不保留），与既有 abort 语义一致。
+    clearStreamingSegments(sessionId);
   };
 
   return { ...mutation, abort };

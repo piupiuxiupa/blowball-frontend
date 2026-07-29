@@ -62,8 +62,7 @@ export function useDeleteSession() {
     const ui = useUIStore.getState();
     if (ui.activeSessionId === sessionId) {
       ui.setActiveSession(null);
-      ui.clearStreaming(sessionId);
-      ui.clearStreamingReasoning(sessionId);
+      ui.clearStreamingSegments(sessionId);
     }
   };
 
