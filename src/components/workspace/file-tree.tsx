@@ -11,9 +11,17 @@ import {
   RefreshCw,
   Eye,
   EyeOff,
+  Plus,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useWorkspace, useDeleteFile, useRenameFile, useMoveNode } from '@/hooks/use-workspace';
+import {
+  useWorkspace,
+  useDeleteFile,
+  useRenameFile,
+  useMoveNode,
+  useCreateNode,
+  reportCreateError,
+} from '@/hooks/use-workspace';
 import { selectFile } from '@/hooks/use-file-edit';
 import { useUIStore } from '@/stores/ui-store';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -36,6 +44,15 @@ function basename(path: string): string {
   return idx < 0 ? path : path.slice(idx + 1);
 }
 
+// 规整「新建」输入名：trim、去首尾斜杠；拒绝空、含反斜杠、`.`/`..` 段或空段（`//`）。
+// 后端仍会校验越界（→ 403），此处只做轻量本地校验以提供即时反馈与更好的默认体验。
+function normalizeCreateName(raw: string): string | null {
+  const name = raw.trim().replace(/^\/+|\/+$/g, '');
+  if (!name || name.includes('\\')) return null;
+  if (name.split('/').some((s) => s === '' || s === '.' || s === '..')) return null;
+  return name;
+}
+
 // HTML5 DnD 携带的路径数据 mime（同时写 text/plain 兜底）。
 const PATH_MIME = 'application/x-blowball-path';
 
@@ -46,6 +63,8 @@ export function FileTree() {
   const toggleShowHiddenFiles = useUIStore((s) => s.toggleShowHiddenFiles);
   const moveNode = useMoveNode();
   const [rootDragOver, setRootDragOver] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [createType, setCreateType] = useState<'file' | 'directory' | null>(null);
   // 失效 ['workspace'] 会命中根目录与所有已展开子目录的查询（前缀匹配），
   // 一次刷新拉到全部最新文件；任一在途时刷新图标旋转。
   const isFetching = useIsFetching({ queryKey: ['workspace'] }) > 0;
@@ -62,7 +81,7 @@ export function FileTree() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-11 items-center justify-between border-b border-white/50 bg-white/20 px-3 backdrop-blur-sm">
+      <div className="relative z-50 flex h-11 items-center justify-between border-b border-white/50 bg-white/20 px-3 backdrop-blur-sm">
         <span className="text-xs font-semibold tracking-wide text-muted-foreground">工作空间</span>
         <div className="flex items-center gap-1">
           <Button
@@ -86,6 +105,53 @@ export function FileTree() {
           >
             <RefreshCw className={cn('h-4 w-4', isFetching && 'animate-spin')} />
           </Button>
+          <div className="relative">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={() => setMenuOpen((v) => !v)}
+              title="新建"
+              aria-label="新建文件或目录"
+              aria-expanded={menuOpen}
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
+            {menuOpen && (
+              <>
+                {/* 点击任意外部区域关闭菜单（透明全屏捕获层，z-40 在菜单之下）。 */}
+                <button
+                  type="button"
+                  aria-hidden
+                  tabIndex={-1}
+                  className="fixed inset-0 z-40 cursor-default"
+                  onClick={() => setMenuOpen(false)}
+                />
+                <div className="glass-strong absolute right-0 top-7 z-50 min-w-[8rem] rounded-md p-1 shadow-md">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+                    onClick={() => {
+                      setCreateType('file');
+                      setMenuOpen(false);
+                    }}
+                  >
+                    <File className="h-3.5 w-3.5" /> 新建文件
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+                    onClick={() => {
+                      setCreateType('directory');
+                      setMenuOpen(false);
+                    }}
+                  >
+                    <Folder className="h-3.5 w-3.5" /> 新建文件夹
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
           <UploadButton />
         </div>
       </div>
@@ -113,8 +179,16 @@ export function FileTree() {
 
           {error && <div className="p-2 text-xs text-destructive">加载文件失败</div>}
 
-          {!isLoading && files.length === 0 && (
+          {!isLoading && files.length === 0 && !createType && (
             <div className="p-2 text-xs text-muted-foreground">暂无文件</div>
+          )}
+
+          {createType && (
+            <CreateRow
+              type={createType}
+              onDone={() => setCreateType(null)}
+              onCancel={() => setCreateType(null)}
+            />
           )}
 
           <FileNodeList entries={files} parentPath="" />
@@ -357,4 +431,73 @@ function DirectoryChildren({ path }: { path: string }) {
   }
 
   return <FileNodeList entries={files} parentPath={path} />;
+}
+
+// 树顶内联「新建」输入行：选好类型后出现一行带图标的输入框，回车创建、Esc 取消、
+// 失焦提交（与 FileNode 行内重命名一致）。失败时保持输入行以便改名重试。
+// 创建于工作空间根目录；输入可含 `/` 做嵌套路径，后端自动建中间父目录。
+function CreateRow({
+  type,
+  onDone,
+  onCancel,
+}: {
+  type: 'file' | 'directory';
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const createNode = useCreateNode();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const submit = async (raw: string) => {
+    if (createNode.isPending) return; // 防止重复提交
+    const name = normalizeCreateName(raw);
+    if (!name) {
+      onCancel();
+      return;
+    }
+    try {
+      await createNode.mutateAsync({ path: name, type });
+      // 文件：打开它（经 selectFile，带 dirty 拦截）；目录：仅刷新（列表已失效）。
+      if (type === 'file') selectFile(name);
+      onDone();
+    } catch (err) {
+      reportCreateError(err, name);
+      // 保持输入行：重新聚焦并选中文本，便于改名重试。
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
+      {type === 'file' ? (
+        <File className="h-4 w-4 shrink-0 text-muted-foreground" />
+      ) : (
+        <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+      )}
+      <Input
+        ref={inputRef}
+        placeholder={type === 'file' ? '文件名（可用 / 分层）' : '目录名（可用 / 分层）'}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            void submit(e.currentTarget.value);
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        onBlur={(e) => void submit(e.target.value)}
+        className="h-6 px-1 py-0 text-sm"
+      />
+      {createNode.isPending && (
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+      )}
+    </div>
+  );
 }

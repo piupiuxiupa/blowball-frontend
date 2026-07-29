@@ -634,7 +634,71 @@ export interface paths {
                 500: components["responses"]["Internal"];
             };
         };
-        post?: never;
+        /**
+         * Create an empty file or directory (strict create).
+         * @description Strict create of an empty leaf selected by the body {"type": "file"
+         *     | "directory"}. A target leaf that already exists — file OR directory —
+         *     is rejected with 409 ALREADY_EXISTS and left untouched (file creation
+         *     uses OpenFile(O_CREATE|O_EXCL) and directory creation uses os.Mkdir, so
+         *     there is no check-then-create window). Missing parent directories are
+         *     auto-created (MkdirAll on the parent), so a nested path like a/b/c is
+         *     established in one call; the strict guarantee applies only to the leaf.
+         *     This is distinct from PUT .../content, which is a create-or-replace for
+         *     text content — Create produces empty nodes only. Creating the workspace
+         *     root itself (empty/"/" path) is rejected with 400 BAD_REQUEST; a missing
+         *     or invalid type returns 400.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /**
+                     * @description Workspace-relative file or directory path (catch-all, may include `/`).
+                     * @example notes/hello.md
+                     */
+                    path: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateNodeRequest"];
+                };
+            };
+            responses: {
+                /** @description Node created. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CreateNodeResponse"];
+                    };
+                };
+                /** @description Empty/"/" path, or missing/invalid type. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                /** @description A leaf (file or directory) already exists at the path. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                500: components["responses"]["Internal"];
+            };
+        };
         /**
          * Delete a workspace file or directory.
          * @description Removes a file or, when the path targets a directory, recursively
@@ -1213,6 +1277,23 @@ export interface components {
         RenameResponse: {
             old_path: string;
             new_path: string;
+        };
+        /** @description Body for POST .../files/{path} (strict create of an empty node). */
+        CreateNodeRequest: {
+            /**
+             * @description Leaf kind to create. "file" → empty file (O_CREATE|O_EXCL);
+             *     "directory" → empty directory (os.Mkdir). Note this uses "directory",
+             *     not the "dir" shorthand used in FileEntry.type.
+             * @enum {string}
+             */
+            type: "file" | "directory";
+        };
+        /** @description Response for POST .../files/{path}. */
+        CreateNodeResponse: {
+            /** @description Workspace-relative path of the created node. */
+            path: string;
+            /** @enum {string} */
+            type: "file" | "directory";
         };
         MCPTool: {
             /**

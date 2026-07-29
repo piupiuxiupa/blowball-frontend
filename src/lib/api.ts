@@ -275,6 +275,11 @@ export type RenameRequest =
   paths['/api/v1/workspace/files/{path}']['put']['requestBody']['content']['application/json'];
 export type RenameResponse =
   paths['/api/v1/workspace/files/{path}']['put']['responses']['200']['content']['application/json'];
+// POST .../files/{path}：严格新建空文件或空目录（leaf-strict + 自动建父目录）。
+export type CreateNodeRequest =
+  paths['/api/v1/workspace/files/{path}']['post']['requestBody']['content']['application/json'];
+export type CreateNodeResponse =
+  paths['/api/v1/workspace/files/{path}']['post']['responses']['200']['content']['application/json'];
 export type MCPToolsResponse =
   paths['/api/v1/mcp/tools']['get']['responses']['200']['content']['application/json'];
 export type MCPTool = NonNullable<MCPToolsResponse['tools']>[number];

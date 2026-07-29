@@ -298,6 +298,25 @@ components:
       properties:
         old_path: {type: string}
         new_path: {type: string}
+    CreateNodeRequest:
+      type: object
+      required: [type]
+      description: Body for POST .../files/{path} (strict create of an empty node).
+      properties:
+        type:
+          type: string
+          enum: [file, directory]
+          description: |
+            Leaf kind to create. "file" → empty file (O_CREATE|O_EXCL);
+            "directory" → empty directory (os.Mkdir). Note this uses "directory",
+            not the "dir" shorthand used in FileEntry.type.
+    CreateNodeResponse:
+      type: object
+      required: [path, type]
+      description: Response for POST .../files/{path}.
+      properties:
+        path: {type: string, description: Workspace-relative path of the created node.}
+        type: {type: string, enum: [file, directory]}
     MCPTool:
       type: object
       required: [type, name, description, parameters]
@@ -924,6 +943,63 @@ paths:
               examples:
                 alreadyExists: {value: {error: {code: ALREADY_EXISTS, message: "destination already exists"}}}
                 destNotEmpty:  {value: {error: {code: DEST_NOT_EMPTY, message: "destination directory is not empty; merge not supported"}}}
+        '500':
+          $ref: '#/components/responses/Internal'
+    post:
+      tags: [Workspace]
+      summary: Create an empty file or directory (strict create).
+      description: |
+        Strict create of an empty leaf selected by the body {"type": "file"
+        | "directory"}. A target leaf that already exists — file OR directory —
+        is rejected with 409 ALREADY_EXISTS and left untouched (file creation
+        uses OpenFile(O_CREATE|O_EXCL) and directory creation uses os.Mkdir, so
+        there is no check-then-create window). Missing parent directories are
+        auto-created (MkdirAll on the parent), so a nested path like a/b/c is
+        established in one call; the strict guarantee applies only to the leaf.
+        This is distinct from PUT .../content, which is a create-or-replace for
+        text content — Create produces empty nodes only. Creating the workspace
+        root itself (empty/"/" path) is rejected with 400 BAD_REQUEST; a missing
+        or invalid type returns 400.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+          description: Workspace-relative file or directory path (catch-all, may include `/`).
+          example: notes/hello.md
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateNodeRequest'}
+            examples:
+              file:      {value: {type: file}}
+              directory: {value: {type: directory}}
+      responses:
+        '200':
+          description: Node created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CreateNodeResponse'}
+        '400':
+          description: Empty/"/" path, or missing/invalid type.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                missingPath: {value: {error: {code: BAD_REQUEST, message: "path is required"}}}
+                badType:     {value: {error: {code: BAD_REQUEST, message: "type must be \"file\" or \"directory\""}}}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: A leaf (file or directory) already exists at the path.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                alreadyExists: {value: {error: {code: ALREADY_EXISTS, message: "node already exists"}}}
         '500':
           $ref: '#/components/responses/Internal'
   /api/v1/workspace/files/{path}/content:

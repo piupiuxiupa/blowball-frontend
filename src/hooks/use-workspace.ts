@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiDelete, apiGet, apiPut, apiUpload, ApiRequestError } from '@/lib/api';
-import type { FileListResponse, UploadResponse, RenameResponse } from '@/lib/api';
+import { apiDelete, apiGet, apiPost, apiPut, apiUpload, ApiRequestError } from '@/lib/api';
+import type { FileListResponse, UploadResponse, RenameResponse, CreateNodeResponse } from '@/lib/api';
 import { useUIStore } from '@/stores/ui-store';
 import { useFileEditStore } from '@/stores/file-edit-store';
 
@@ -106,6 +106,19 @@ function reportMoveError(err: unknown, newPath: string): void {
   }
 }
 
+// 新建错误提示（task：新建文件/目录）：409 ALREADY_EXISTS → 已存在；其余按通用消息。
+export function reportCreateError(err: unknown, path: string): void {
+  if (err instanceof ApiRequestError) {
+    if (err.code === 'ALREADY_EXISTS') {
+      alert(`「${path}」已存在`);
+    } else {
+      alert(`创建失败：${err.message}`);
+    }
+  } else {
+    alert(`创建「${path}」失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // 移动/拖入文件夹的编排（tasks 6.3 / 6.4）：客户端防环 → PUT rename →
 // 409 ALREADY_EXISTS 弹覆盖确认后带 overwrite 重发；409 DEST_NOT_EMPTY 提示目录非空。
 // 返回是否成功（用于拖拽视觉收尾）。
@@ -170,6 +183,23 @@ export function useDeleteFile() {
       if (err instanceof ApiRequestError && err.code === 'NOT_FOUND') {
         syncDeleted(path);
       }
+    },
+  });
+}
+
+// Create an empty file or directory via POST .../files/{path}（strict create：
+// leaf 已存在 → 409，父目录自动创建）。与 rename/delete 的整路径编码一致
+// （encodeURIComponent，`/` → `%2F`）。仅失效列表查询；新建后是否打开文件由
+// 调用方决定，保持 hook 与 UI 解耦。
+export function useCreateNode() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, type }: { path: string; type: 'file' | 'directory' }) =>
+      apiPost<CreateNodeResponse>(`/api/v1/workspace/files/${encodeURIComponent(path)}`, {
+        body: { type },
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workspace'] });
     },
   });
 }
