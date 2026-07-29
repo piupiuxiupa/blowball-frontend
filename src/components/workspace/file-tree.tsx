@@ -1,8 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
 import { useIsFetching, useQueryClient } from '@tanstack/react-query';
-import { Folder, ChevronRight, ChevronDown, File, Trash2, Pencil, Loader2, RefreshCw, Eye, EyeOff } from 'lucide-react';
+import {
+  Folder,
+  ChevronRight,
+  ChevronDown,
+  File,
+  Trash2,
+  Pencil,
+  Loader2,
+  RefreshCw,
+  Eye,
+  EyeOff,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useWorkspace, useDeleteFile, useRenameFile } from '@/hooks/use-workspace';
+import { useWorkspace, useDeleteFile, useRenameFile, useMoveNode } from '@/hooks/use-workspace';
+import { selectFile } from '@/hooks/use-file-edit';
 import { useUIStore } from '@/stores/ui-store';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -19,14 +31,34 @@ function joinPath(parent: string, name: string): string {
   return parent ? `${parent}/${name}` : name;
 }
 
+function basename(path: string): string {
+  const idx = path.lastIndexOf('/');
+  return idx < 0 ? path : path.slice(idx + 1);
+}
+
+// HTML5 DnD 携带的路径数据 mime（同时写 text/plain 兜底）。
+const PATH_MIME = 'application/x-blowball-path';
+
 export function FileTree() {
   const { files, isLoading, error } = useWorkspace();
   const queryClient = useQueryClient();
   const showHiddenFiles = useUIStore((s) => s.showHiddenFiles);
   const toggleShowHiddenFiles = useUIStore((s) => s.toggleShowHiddenFiles);
+  const moveNode = useMoveNode();
+  const [rootDragOver, setRootDragOver] = useState(false);
   // 失效 ['workspace'] 会命中根目录与所有已展开子目录的查询（前缀匹配），
   // 一次刷新拉到全部最新文件；任一在途时刷新图标旋转。
   const isFetching = useIsFetching({ queryKey: ['workspace'] }) > 0;
+
+  // 拖到根区域：new_path = basename（移到工作区根）。
+  const handleRootDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setRootDragOver(false);
+    const src = e.dataTransfer.getData(PATH_MIME) || e.dataTransfer.getData('text/plain');
+    if (!src) return;
+    await moveNode(src, basename(src));
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -59,7 +91,18 @@ export function FileTree() {
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="p-2">
+        {/* 根区域作为 drop 目标（移到根）；命中子目录时其 onDrop 会 stopPropagation，不再冒泡到这里。 */}
+        <div
+          className={cn('p-2', rootDragOver && 'rounded-md ring-2 ring-inset ring-primary/40')}
+          onDragOver={(e) => {
+            if (e.dataTransfer.types.includes(PATH_MIME) || e.dataTransfer.types.includes('text/plain')) {
+              e.preventDefault();
+              setRootDragOver(true);
+            }
+          }}
+          onDragLeave={() => setRootDragOver(false)}
+          onDrop={handleRootDrop}
+        >
           {isLoading && (
             <div className="space-y-2">
               <Skeleton className="h-6 w-full" />
@@ -95,9 +138,11 @@ function FileNodeList({ entries, parentPath }: { entries: FileEntry[]; parentPat
 function FileNode({ entry, parentPath }: { entry: FileEntry; parentPath: string }) {
   const [expanded, setExpanded] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const { activeFilePath, setActiveFile } = useUIStore();
+  const [dragOver, setDragOver] = useState(false);
+  const { activeFilePath } = useUIStore();
   const deleteFile = useDeleteFile();
   const renameFile = useRenameFile();
+  const moveNode = useMoveNode();
   const fullPath = joinPath(parentPath, entry.name);
   const isActive = activeFilePath === fullPath;
   const isDeleting = deleteFile.isPending;
@@ -157,6 +202,34 @@ function FileNode({ entry, parentPath }: { entry: FileEntry; parentPath: string 
     void submitRename(e.target.value);
   };
 
+  // 拖拽源：拖起节点（文件/目录），把全路径写入 dataTransfer。
+  const handleDragStart = (e: React.DragEvent) => {
+    e.dataTransfer.setData(PATH_MIME, fullPath);
+    e.dataTransfer.setData('text/plain', fullPath);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  // 目录作为 drop 目标：拖入即移动进该目录（new_path = 目录/basename）。
+  const handleDirDragOver = (e: React.DragEvent) => {
+    if (!isDir || isEditing) return;
+    if (e.dataTransfer.types.includes(PATH_MIME) || e.dataTransfer.types.includes('text/plain')) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      setDragOver(true);
+    }
+  };
+
+  const handleDirDrop = async (e: React.DragEvent) => {
+    if (!isDir) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    const src = e.dataTransfer.getData(PATH_MIME) || e.dataTransfer.getData('text/plain');
+    if (!src) return;
+    await moveNode(src, joinPath(fullPath, basename(src)));
+  };
+
   const actionButtons = !isEditing && (
     <>
       <Button
@@ -206,7 +279,17 @@ function FileNode({ entry, parentPath }: { entry: FileEntry; parentPath: string 
   if (isDir) {
     return (
       <div>
-        <div className="group relative flex items-center">
+        <div
+          className={cn(
+            'group relative flex items-center rounded-lg',
+            dragOver && 'ring-2 ring-inset ring-primary/50 bg-primary/5'
+          )}
+          draggable={!isEditing}
+          onDragStart={handleDragStart}
+          onDragOver={handleDirDragOver}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDirDrop}
+        >
           <button
             onClick={() => !isEditing && setExpanded(!expanded)}
             disabled={isDeleting || isEditing}
@@ -233,9 +316,17 @@ function FileNode({ entry, parentPath }: { entry: FileEntry; parentPath: string 
   }
 
   return (
-    <div className="group relative flex items-center">
+    <div
+      className="group relative flex items-center"
+      draggable={!isEditing}
+      onDragStart={handleDragStart}
+      // 文件行非 drop 目标：阻止冒泡到根区域，避免悬停文件时根高亮/误落到根（拖放仅认目录与根）。
+      onDragOver={(e) => e.stopPropagation()}
+    >
       <button
-        onClick={() => setActiveFile(fullPath)}
+        // 经 selectFile（带 dirty 拦截）而非直接 setActiveFile：当前文件有未保存改动时
+        // 会先弹保存/不保存/取消（task 4.4）。
+        onClick={() => selectFile(fullPath)}
         disabled={isDeleting || isEditing}
         className={cn(
           'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 pr-14 text-left text-sm transition-all',

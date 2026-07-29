@@ -578,9 +578,14 @@ export interface paths {
         };
         /**
          * Rename or move a workspace file or directory.
-         * @description Renames or moves a file or directory within the user's workspace. The
-         *     destination path must not already exist (as either a file or directory);
-         *     if it does, the operation returns 409 without making any changes.
+         * @description Renames or moves a file or directory within the user's workspace. When
+         *     new_path resolves to an existing directory, the source is moved inside it
+         *     as new_path/<basename> (the "drag into a folder" gesture). Otherwise the
+         *     final destination must not already exist: if it does, the operation
+         *     returns 409 unless `overwrite` is true, in which case an existing file
+         *     destination is atomically replaced (overwriting a directory is rejected
+         *     with 409 DEST_NOT_EMPTY; tree merge is not supported). No changes are
+         *     made on any rejection.
          */
         put: {
             parameters: {
@@ -614,7 +619,18 @@ export interface paths {
                 401: components["responses"]["Unauthorized"];
                 403: components["responses"]["Forbidden"];
                 404: components["responses"]["NotFound"];
-                409: components["responses"]["AlreadyExists"];
+                /**
+                 * @description Final destination already exists, or (with overwrite) is an existing
+                 *     directory.
+                 */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
                 500: components["responses"]["Internal"];
             };
         };
@@ -704,7 +720,65 @@ export interface paths {
                 500: components["responses"]["Internal"];
             };
         };
-        put?: never;
+        /**
+         * Create or replace a workspace file's text content atomically.
+         * @description Symmetric write counterpart to GET .../content: an atomic, create-or-replace
+         *     (HTTP PUT) text-content write. A missing target file is created (missing
+         *     parents are auto-created); an existing file is fully replaced via a
+         *     temp-file + rename, so a crash mid-write never truncates the destination.
+         *     The body is capped at the server's max upload size, and only text is
+         *     accepted — a NUL byte is rejected with 400 BINARY_FILE (binary/large files
+         *     use POST .../upload). The `path` is the catch-all workspace-relative file
+         *     path; a trailing `/content` selects this operation under the PUT catch-all.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /**
+                     * @description Workspace-relative file path (catch-all, may include `/`).
+                     * @example notes/hello.md
+                     */
+                    path: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    /**
+                     * @example {
+                     *       "content": "# Hello"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["WriteContentRequest"];
+                };
+            };
+            responses: {
+                /** @description Content written; the file's relative path and byte size. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["FileContentWriteResponse"];
+                    };
+                };
+                /** @description Malformed body, the target is an existing directory, or the content is binary. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                413: components["responses"]["PayloadTooLarge"];
+                500: components["responses"]["Internal"];
+            };
+        };
         post?: never;
         delete?: never;
         options?: never;
@@ -1102,6 +1176,18 @@ export interface components {
             content: string;
             size: number;
         };
+        /** @description Body for PUT .../files/{path}/content. */
+        WriteContentRequest: {
+            /** @description Full text body to write as a whole-file replace (create-or-replace, like xizhi_write_file). */
+            content: string;
+        };
+        /** @description Response for PUT .../files/{path}/content. */
+        FileContentWriteResponse: {
+            /** @description Workspace-relative path of the written file. */
+            path: string;
+            /** @description Number of bytes written. */
+            size: number;
+        };
         UpdateTitleRequest: {
             /** @description New session title (max 20 characters; longer values are truncated). */
             title: string;
@@ -1115,6 +1201,14 @@ export interface components {
         RenameRequest: {
             /** @description Workspace-relative destination path. */
             new_path: string;
+            /**
+             * @description When true and the final destination is an existing file, atomically
+             *     replace it. Default false preserves the 409-on-existing-file behavior.
+             *     Overwriting an existing directory is rejected with 409 DEST_NOT_EMPTY;
+             *     tree merge is not supported.
+             * @default false
+             */
+            overwrite: boolean;
         };
         RenameResponse: {
             old_path: string;

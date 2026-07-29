@@ -244,6 +244,21 @@ components:
         path: {type: string}
         content: {type: string}
         size: {type: integer}
+    WriteContentRequest:
+      type: object
+      required: [content]
+      description: Body for PUT .../files/{path}/content.
+      properties:
+        content:
+          type: string
+          description: Full text body to write as a whole-file replace (create-or-replace, like xizhi_write_file).
+    FileContentWriteResponse:
+      type: object
+      required: [path, size]
+      description: Response for PUT .../files/{path}/content.
+      properties:
+        path: {type: string, description: Workspace-relative path of the written file.}
+        size: {type: integer, description: Number of bytes written.}
     UpdateTitleRequest:
       type: object
       required: [title]
@@ -269,6 +284,14 @@ components:
           type: string
           minLength: 1
           description: Workspace-relative destination path.
+        overwrite:
+          type: boolean
+          default: false
+          description: |
+            When true and the final destination is an existing file, atomically
+            replace it. Default false preserves the 409-on-existing-file behavior.
+            Overwriting an existing directory is rejected with 409 DEST_NOT_EMPTY;
+            tree merge is not supported.
     RenameResponse:
       type: object
       required: [old_path, new_path]
@@ -857,9 +880,14 @@ paths:
       tags: [Workspace]
       summary: Rename or move a workspace file or directory.
       description: |
-        Renames or moves a file or directory within the user's workspace. The
-        destination path must not already exist (as either a file or directory);
-        if it does, the operation returns 409 without making any changes.
+        Renames or moves a file or directory within the user's workspace. When
+        new_path resolves to an existing directory, the source is moved inside it
+        as new_path/<basename> (the "drag into a folder" gesture). Otherwise the
+        final destination must not already exist: if it does, the operation
+        returns 409 unless `overwrite` is true, in which case an existing file
+        destination is atomically replaced (overwriting a directory is rejected
+        with 409 DEST_NOT_EMPTY; tree merge is not supported). No changes are
+        made on any rejection.
       parameters:
         - name: path
           in: path
@@ -887,7 +915,15 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/AlreadyExists'
+          description: |
+            Final destination already exists, or (with overwrite) is an existing
+            directory.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                alreadyExists: {value: {error: {code: ALREADY_EXISTS, message: "destination already exists"}}}
+                destNotEmpty:  {value: {error: {code: DEST_NOT_EMPTY, message: "destination directory is not empty; merge not supported"}}}
         '500':
           $ref: '#/components/responses/Internal'
   /api/v1/workspace/files/{path}/content:
@@ -918,6 +954,53 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Internal'
+    put:
+      tags: [Workspace]
+      summary: Create or replace a workspace file's text content atomically.
+      description: |
+        Symmetric write counterpart to GET .../content: an atomic, create-or-replace
+        (HTTP PUT) text-content write. A missing target file is created (missing
+        parents are auto-created); an existing file is fully replaced via a
+        temp-file + rename, so a crash mid-write never truncates the destination.
+        The body is capped at the server's max upload size, and only text is
+        accepted — a NUL byte is rejected with 400 BINARY_FILE (binary/large files
+        use POST .../upload). The `path` is the catch-all workspace-relative file
+        path; a trailing `/content` selects this operation under the PUT catch-all.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema: {type: string}
+          description: Workspace-relative file path (catch-all, may include `/`).
+          example: notes/hello.md
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WriteContentRequest'}
+            example: {content: "# Hello"}
+      responses:
+        '200':
+          description: Content written; the file's relative path and byte size.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FileContentWriteResponse'}
+        '400':
+          description: Malformed body, the target is an existing directory, or the content is binary.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              examples:
+                binaryFile: {value: {error: {code: BINARY_FILE, message: "binary content, use upload endpoint"}}}
+                directory:  {value: {error: {code: BAD_REQUEST, message: "path is a directory"}}}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
         '500':
           $ref: '#/components/responses/Internal'
   /api/v1/workspace/files/{path}/onlyoffice-config:

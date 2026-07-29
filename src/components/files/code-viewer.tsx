@@ -62,7 +62,9 @@ export function CodeViewer({ content, path, readOnly = true }: CodeViewerProps) 
   return (
     <div className="h-full">
       <Suspense fallback={<MonacoFallback />}>
-        <MonacoViewer path={path} content={content} readOnly={readOnly} />
+        {/* CodeViewer 仅在只读场景被调用（查看态，或大文件编辑态回退）；editable
+            由 readOnly 反推。可编辑的文本文件在 file-renderer 直接渲染 MonacoViewer。 */}
+        <MonacoViewer path={path} content={content} editable={!readOnly} />
       </Suspense>
     </div>
   );

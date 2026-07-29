@@ -260,6 +260,11 @@ export type FileListResponse = paths['/api/v1/workspace/files']['get']['response
 export type UploadResponse = paths['/api/v1/workspace/upload']['post']['responses']['200']['content']['application/json'];
 export type FileContentResponse =
   paths['/api/v1/workspace/files/{path}/content']['get']['responses']['200']['content']['application/json'];
+// PUT .../files/{path}/content：整文件原子写（create-or-replace，对称于 GET /content）。
+export type WriteContentRequest =
+  paths['/api/v1/workspace/files/{path}/content']['put']['requestBody']['content']['application/json'];
+export type FileContentWriteResponse =
+  paths['/api/v1/workspace/files/{path}/content']['put']['responses']['200']['content']['application/json'];
 export type Message = NonNullable<SessionMessagesResponse['messages']>[number];
 export type FileEntry = NonNullable<FileListResponse['files']>[number];
 export type UpdateTitleRequest =

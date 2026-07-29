@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiDelete, apiGet, apiPut, apiUpload, ApiRequestError } from '@/lib/api';
 import type { FileListResponse, UploadResponse, RenameResponse } from '@/lib/api';
 import { useUIStore } from '@/stores/ui-store';
+import { useFileEditStore } from '@/stores/file-edit-store';
 
 export function useWorkspace(path?: string) {
   const queryClient = useQueryClient();
@@ -45,11 +46,14 @@ export function useRenameFile() {
   const syncRenamed = (oldPath: string, newPath: string) => {
     queryClient.removeQueries({ queryKey: ['file-content', oldPath] });
     queryClient.invalidateQueries({ queryKey: ['workspace'] });
+    // 回收编辑态（载入基线/dirty）：旧路径及其子树下的条目已失效。
+    useFileEditStore.getState().clearUnder(oldPath);
 
     const ui = useUIStore.getState();
     const active = ui.activeFilePath;
     if (!active) return;
 
+    // 前缀感知 activeFile 改写：被移动文件本身或位于被移动目录内 → 改写到新位置。
     let next: string | null = null;
     if (active === oldPath) {
       next = newPath;
@@ -62,9 +66,18 @@ export function useRenameFile() {
   };
 
   return useMutation({
-    mutationFn: ({ oldPath, newPath }: { oldPath: string; newPath: string }) =>
+    // overwrite 按需携带（task 6.1）：默认 false 保留 409 语义；覆盖确认后传 true。
+    mutationFn: ({
+      oldPath,
+      newPath,
+      overwrite,
+    }: {
+      oldPath: string;
+      newPath: string;
+      overwrite?: boolean;
+    }) =>
       apiPut<RenameResponse>(`/api/v1/workspace/files/${encodeURIComponent(oldPath)}`, {
-        body: { new_path: newPath },
+        body: { new_path: newPath, overwrite: overwrite === true },
       }),
     onSuccess: (data) => syncRenamed(data.old_path, data.new_path),
     onError: (err, { oldPath, newPath }) => {
@@ -73,6 +86,59 @@ export function useRenameFile() {
       }
     },
   });
+}
+
+// 客户端防环（task 6.4）：目标等于源、或目标位于源子树内 → 拒绝（后者会把目录移入自身，
+// 破坏目录树）。同路径视为无操作。
+export function isMoveIntoSelf(oldPath: string, newPath: string): boolean {
+  return newPath.startsWith(`${oldPath}/`);
+}
+
+function reportMoveError(err: unknown, newPath: string): void {
+  if (err instanceof ApiRequestError) {
+    if (err.code === 'DEST_NOT_EMPTY') {
+      alert('目标目录非空，不支持合并');
+    } else {
+      alert(`移动失败：${err.message}`);
+    }
+  } else {
+    alert(`移动到「${newPath}」失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// 移动/拖入文件夹的编排（tasks 6.3 / 6.4）：客户端防环 → PUT rename →
+// 409 ALREADY_EXISTS 弹覆盖确认后带 overwrite 重发；409 DEST_NOT_EMPTY 提示目录非空。
+// 返回是否成功（用于拖拽视觉收尾）。
+export function useMoveNode() {
+  const rename = useRenameFile();
+  return async (oldPath: string, newPath: string): Promise<boolean> => {
+    if (newPath === oldPath) return false; // 拖回原处：无操作
+    if (isMoveIntoSelf(oldPath, newPath)) {
+      alert('不能将目录移入自身子目录');
+      return false;
+    }
+    try {
+      await rename.mutateAsync({ oldPath, newPath });
+      return true;
+    } catch (err) {
+      // 目标已存在（后端：最终目的地是已存在文件，或对目录覆盖前的拒绝）。目录覆盖会
+      // 单独以 DEST_NOT_EMPTY 返回（见 reportMoveError），故此处 ALREADY_EXISTS 视为文件覆盖。
+      if (err instanceof ApiRequestError && err.code === 'ALREADY_EXISTS') {
+        if (window.confirm(`目标「${newPath}」已存在，是否覆盖？`)) {
+          try {
+            await rename.mutateAsync({ oldPath, newPath, overwrite: true });
+            return true;
+          } catch (err2) {
+            reportMoveError(err2, newPath);
+            return false;
+          }
+        }
+        return false;
+      }
+      reportMoveError(err, newPath);
+      return false;
+    }
+  };
 }
 
 // Delete is a dedicated hook so each file/dir node owns its own mutation.
@@ -87,6 +153,7 @@ export function useDeleteFile() {
   const syncDeleted = (path: string) => {
     queryClient.removeQueries({ queryKey: ['file-content', path] });
     queryClient.invalidateQueries({ queryKey: ['workspace'] });
+    useFileEditStore.getState().clearUnder(path);
 
     const ui = useUIStore.getState();
     const active = ui.activeFilePath;

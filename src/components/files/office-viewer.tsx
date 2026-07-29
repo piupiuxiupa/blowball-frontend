@@ -1,13 +1,13 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { loadOnlyOfficeApi } from '@/lib/onlyoffice';
 import { useOfficeConfig } from '@/hooks/use-office-config';
+import { useUIStore } from '@/stores/ui-store';
 
 interface OfficeViewerProps {
   path: string;
-  /** 由外层「刷新」按钮 bump：并入 EditorMount 的 key，触发重新挂载并重取配置，
-   * 让 OnlyOffice 用全新 document.key 重新转换（与组件内刷新按钮等价）。 */
+  /** 由统一工具条「刷新」按钮 bump：并入 EditorMount 的 key 与配置查询的 nonce，
+   * 触发重新挂载并重取配置，让 OnlyOffice 用全新 document.key 重新转换。 */
   refreshKey?: number;
 }
 
@@ -19,6 +19,10 @@ const LOAD_TIMEOUT_MS = 20000;
 // to the workspace through the backend's save-callback endpoint (saves only fire
 // in edit mode).
 //
+// 只读/编辑模式读取统一的 ui-store.fileViewMode（task 2.2：移除组件自身的切换按钮，
+// 交由中间面板工具条统一控制）。OfficeEditorModeName 与 fileViewMode 取值同名
+// （'edit' | 'view'），直接复用。
+//
 // All OnlyOffice config (secret, server_url, internal_backend) is owned by the
 // backend — this component fetches one signed response carrying BOTH an edit and
 // a view config (each with its own token), then hands the chosen mode's
@@ -28,47 +32,18 @@ const LOAD_TIMEOUT_MS = 20000;
 // document.key, forcing OnlyOffice to re-convert (never a stale cached document).
 //
 // Switching files, modes, or pressing Refresh remounts <EditorMount> (keyed by
-// path+mode+nonce) so OnlyOffice never reuses a stale element/session across
+// path+mode+refreshKey) so OnlyOffice never reuses a stale element/session across
 // documents — reusing it crashes the editor (blank screen). Each document gets
 // its own fresh mount + lifecycle.
 export function OfficeViewer({ path, refreshKey = 0 }: OfficeViewerProps) {
-  const [nonce, setNonce] = useState(0);
-  const [mode, setMode] = useState<OfficeEditorModeName>('edit');
+  const mode = useUIStore((s) => s.fileViewMode);
   return (
-    <div className="flex h-full w-full flex-col">
-      <div className="flex items-center justify-between border-b px-3 py-1.5 text-xs text-muted-foreground">
-        <span className="truncate">
-          OnlyOffice {mode === 'edit' ? '编辑' : '只读'} · {path}
-        </span>
-        <div className="flex items-center gap-1">
-          <Button
-            variant={mode === 'edit' ? 'secondary' : 'ghost'}
-            size="sm"
-            onClick={() => setMode('edit')}
-          >
-            编辑
-          </Button>
-          <Button
-            variant={mode === 'view' ? 'secondary' : 'ghost'}
-            size="sm"
-            onClick={() => setMode('view')}
-          >
-            只读
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setNonce((n) => n + 1)}>
-            刷新
-          </Button>
-        </div>
-      </div>
-      <div className="relative flex-1">
-        <EditorMount
-          key={`${path}::${mode}::${nonce}::${refreshKey}`}
-          path={path}
-          nonce={nonce}
-          mode={mode}
-        />
-      </div>
-    </div>
+    <EditorMount
+      key={`${path}::${mode}::${refreshKey}`}
+      path={path}
+      nonce={refreshKey}
+      mode={mode}
+    />
   );
 }
 
