@@ -1,23 +1,33 @@
 import { useEffect, useState } from 'react';
-import { FileWarning } from 'lucide-react';
-import { useVersionBlob } from '@/hooks/use-file-versioning';
-import { canEdit, getFileExtension, isExcel, isImage, isPdf, isWord } from '@/lib/file-type';
+import { canEdit, getFileExtension, isImage, isOffice, isPdf } from '@/lib/file-type';
 import { Skeleton } from '@/components/ui/skeleton';
 import { CodeViewer } from './code-viewer';
 import { ImageViewer } from './image-viewer';
 import { PdfViewer } from './pdf-viewer';
-import { WordViewer } from './word-viewer';
-import { ExcelViewer } from './excel-viewer';
+import { OfficeVersionViewer } from './office-version-viewer';
+import { useVersionBlob } from '@/hooks/use-file-versioning';
 
 interface VersionPreviewProps {
   path: string;
   versionId: string;
 }
 
-// 只读预览某个历史版本：从 office-vers 拉取该版本字节，按文件类型分发到现有 viewer。
-// 文本类解码后进只读 CodeViewer；图片/PDF/Office 用 object URL 喂给对应 viewer；
-// pptx 等无轻量解析的二进制回退占位提示。预览 SHALL NOT 落盘或改工作区。
+// 只读预览某个历史版本：按文件类型分发。
+// - Office 文件（docx/xlsx/pptx 及 legacy）整体委托给 OfficeVersionViewer（经 OnlyOffice
+//   view 模式渲染，未配置时内部回退轻量查看器）；本组件不为 Office 拉取版本字节。
+// - 文本/图片/PDF 由 MediaVersionPreview 从 office-vers 拉取版本字节后渲染。
+// 预览 SHALL NOT 落盘或改工作区。
 export function VersionPreview({ path, versionId }: VersionPreviewProps) {
+  const ext = getFileExtension(path);
+  if (isOffice(ext)) {
+    return <OfficeVersionViewer path={path} versionId={versionId} />;
+  }
+  return <MediaVersionPreview path={path} versionId={versionId} />;
+}
+
+// 文本/图片/PDF 历史版本预览：拉取版本字节；文本类解码后进只读 CodeViewer，
+// 图片/PDF 用 object URL 喂给对应 viewer。
+function MediaVersionPreview({ path, versionId }: VersionPreviewProps) {
   const { data: blob, isLoading, error } = useVersionBlob(path, versionId);
   const ext = getFileExtension(path);
   const isText = canEdit(path);
@@ -83,15 +93,6 @@ export function VersionPreview({ path, versionId }: VersionPreviewProps) {
 
   if (isImage(ext)) return <ImageViewer path={path} url={objectUrl} />;
   if (isPdf(ext)) return <PdfViewer path={path} url={objectUrl} />;
-  if (isWord(ext)) return <WordViewer path={path} url={objectUrl} />;
-  if (isExcel(ext)) return <ExcelViewer path={path} url={objectUrl} />;
 
-  // pptx / 其它无轻量解析的二进制：占位提示（不阻塞，可后续增强）。
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center text-muted-foreground">
-      <FileWarning className="h-10 w-10" />
-      <p className="text-sm">该版本类型暂不支持在线预览</p>
-      <p className="text-xs">{path}</p>
-    </div>
-  );
+  return null;
 }

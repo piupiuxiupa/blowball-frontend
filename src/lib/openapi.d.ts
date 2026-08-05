@@ -925,6 +925,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspace/files/{path}/onlyoffice-version-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Build and sign an OnlyOffice view-only config for a historical version.
+         * @description Returns a server-signed view-only DocEditor config
+         *     (`{server_url, view:{config, token}}`) so the browser can preview a
+         *     specific historical version of a workspace office file in OnlyOffice.
+         *     The caller supplies the `versionId` (obtained elsewhere from the
+         *     office-vers service); `document.url` points at office-vers for that
+         *     version and carries no credential. The OnlyOffice secret lives only in
+         *     the backend; `view.token` is an HS256 JWT whose payload is the
+         *     `view.config`. Unlike the live-file `/onlyoffice-config` endpoint:
+         *     `document.url` targets office-vers (not the backend), `document.key` is
+         *     deterministic per `(path, versionId)` (so conversions are cached/shared),
+         *     the config is view-only with no `callbackUrl`/`forcesave`, and the local
+         *     workspace file is NOT stat-checked (the version's source of truth is
+         *     office-vers). Shares the workspace catch-all, dispatching on the
+         *     trailing `/onlyoffice-version-config` suffix.
+         */
+        get: {
+            parameters: {
+                query: {
+                    /**
+                     * @description The office-vers (MinIO) version id of the historical version to
+                     *     preview. Obtained from the office-vers version-history listing.
+                     * @example 7a604dc7-719f-426f-88c4-642313fd2860
+                     */
+                    versionId: string;
+                };
+                header?: never;
+                path: {
+                    /**
+                     * @description Workspace-relative office file path (catch-all, may include `/`).
+                     * @example reports/2026-q2.docx
+                     */
+                    path: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Signed view-only editor config for the requested version. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["OnlyOfficeVersionConfigResponse"];
+                    };
+                };
+                /** @description The `versionId` query parameter is missing. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                /** @description OnlyOffice is not configured (`secret` or `version_service_url` empty). */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspace/onlyoffice-callback": {
         parameters: {
             query?: never;
@@ -1345,6 +1430,26 @@ export interface components {
             /** @description Browser-facing DocumentServer origin (api.js is loaded from here). */
             server_url: string;
             edit: components["schemas"]["OnlyOfficeModeConfig"];
+            view: components["schemas"]["OnlyOfficeModeConfig"];
+        };
+        /**
+         * @description Server-signed OnlyOffice DocEditor config for viewing a specific
+         *     historical version (view-only). Mirrors one mode of
+         *     OnlyOfficeConfigResponse — a single `{config, token}` pair nested under
+         *     `view` — so the frontend reuses its existing `view` consumption path. A
+         *     historical version is immutable, so only the view mode is returned (no
+         *     edit). `document.url` points at the external office-vers service
+         *     (`{version_service_url}/documents/{userUUID}/{path}?action=version&versionId=<vid>`)
+         *     and carries NO credential (office-vers is unauthenticated by design);
+         *     `document.key` is derived deterministically from `(path, versionId)`
+         *     (`base32(sha256(path + ":" + versionId))`) so OnlyOffice caches and shares
+         *     the conversion across opens/users; the config carries no `callbackUrl`
+         *     and no `customization.forcesave` (nothing to save back to an immutable
+         *     version).
+         */
+        OnlyOfficeVersionConfigResponse: {
+            /** @description Browser-facing DocumentServer origin (api.js is loaded from here). */
+            server_url: string;
             view: components["schemas"]["OnlyOfficeModeConfig"];
         };
         /**

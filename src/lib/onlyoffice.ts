@@ -62,6 +62,17 @@ export interface OfficeEditorResponse {
   view: OfficeEditorMode;
 }
 
+// Response from GET /api/v1/workspace/files/<path>/onlyoffice-version-config.
+// View-only counterpart to OfficeEditorResponse: historical versions are
+// immutable, so the backend returns ONLY a `view` config + token (no `edit`,
+// no callbackUrl, no forcesave). Mirrors the backend's
+// OnlyOfficeVersionConfigResponse ({server_url, view}). The browser consumes
+// `.view` exactly like the view mode of the live-file response.
+export interface OfficeEditorVersionResponse {
+  server_url: string;
+  view: OfficeEditorMode;
+}
+
 // fetchOfficeConfig asks the backend to build + sign the DocEditor config for a
 // workspace office file. The OnlyOffice secret stays server-side; the browser
 // receives only the signed config + token. Authenticated via the bearer JWT that
@@ -69,6 +80,24 @@ export interface OfficeEditorResponse {
 export function fetchOfficeConfig(path: string): Promise<OfficeEditorResponse> {
   return apiGet<OfficeEditorResponse>(
     `/api/v1/workspace/files/${encodeURIComponent(path)}/onlyoffice-config`
+  );
+}
+
+// fetchOfficeVersionConfig asks the backend to build + sign a VIEW-ONLY DocEditor
+// config for a HISTORICAL office version. The response is view-only
+// ({server_url, view}) — historical versions are immutable, so there is no
+// `edit` mode, no callbackUrl, no forcesave. Because versions are immutable,
+// the backend derives a STABLE document.key from versionId (OnlyOffice caches
+// the conversion; reopening is instant), unlike the live path which mints a
+// fresh random key per request. Authenticated via the bearer JWT that api.ts
+// injects automatically.
+export function fetchOfficeVersionConfig(
+  path: string,
+  versionId: string,
+): Promise<OfficeEditorVersionResponse> {
+  return apiGet<OfficeEditorVersionResponse>(
+    `/api/v1/workspace/files/${encodeURIComponent(path)}/onlyoffice-version-config`,
+    { params: { versionId } },
   );
 }
 
