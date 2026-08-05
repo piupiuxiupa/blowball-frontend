@@ -11,16 +11,18 @@ interface PdfViewerProps {
   path: string;
   /** 刷新时 bump：附加为缓存破坏参数，URL 变化触发下方 useEffect 重新加载 PDF。 */
   refreshKey?: number;
+  /** 覆盖预览 URL（如版本字节的 object URL）；省略则用工作区预览端点。 */
+  url?: string;
 }
 
-export function PdfViewer({ path, refreshKey }: PdfViewerProps) {
+export function PdfViewer({ path, refreshKey, url: urlOverride }: PdfViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [pdf, setPdf] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [pageNum, setPageNum] = useState(1);
   const [numPages, setNumPages] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const url = getPreviewUrl(path, refreshKey);
+  const url = urlOverride ?? getPreviewUrl(path, refreshKey);
 
   useEffect(() => {
     let cancelled = false;

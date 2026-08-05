@@ -25,6 +25,11 @@ interface UIState {
   activeSessionId: string | null;
   activeFilePath: string | null;
   fileViewMode: FileViewMode;
+  // 版本历史抽屉开合（编辑器右侧、可折叠）。按活动文件加载版本列表。
+  versionDrawerOpen: boolean;
+  // 当前在主编辑区只读预览的历史版本 id；null = 正常编辑/查看态。
+  // 切换活动文件时清空（见 setActiveFile）。
+  previewVersionId: string | null;
   sidebarCollapsed: boolean;
   showHiddenFiles: boolean;
   streamingSegments: Record<string, StreamingSegment[]>;
@@ -32,6 +37,8 @@ interface UIState {
   setActiveSession: (id: string | null) => void;
   setActiveFile: (path: string | null) => void;
   setFileViewMode: (mode: FileViewMode) => void;
+  setVersionDrawerOpen: (open: boolean) => void;
+  setPreviewVersionId: (id: string | null) => void;
   toggleSidebar: () => void;
   toggleShowHiddenFiles: () => void;
   startAgentSegment: (sessionId: string, agent: string) => void;
@@ -73,6 +80,8 @@ export const useUIStore = create<UIState>((set) => ({
   activeSessionId: null,
   activeFilePath: null,
   fileViewMode: 'view',
+  versionDrawerOpen: false,
+  previewVersionId: null,
   sidebarCollapsed: false,
   // 默认隐藏以「.」开头的条目（.git/.codegraph 等），保持工作空间整洁；按需在
   // 文件树头部用眼睛按钮切换显示。过滤在各层级生效（含已展开子目录）。
@@ -80,8 +89,11 @@ export const useUIStore = create<UIState>((set) => ({
   streamingSegments: {},
 
   setActiveSession: (id) => set({ activeSessionId: id }),
-  setActiveFile: (path) => set({ activeFilePath: path }),
+  // 切换活动文件时一并退出版本预览（预览绑定的是旧文件的历史版本）。
+  setActiveFile: (path) => set({ activeFilePath: path, previewVersionId: null }),
   setFileViewMode: (mode) => set({ fileViewMode: mode }),
+  setVersionDrawerOpen: (open) => set({ versionDrawerOpen: open }),
+  setPreviewVersionId: (id) => set({ previewVersionId: id }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   toggleShowHiddenFiles: () => set((state) => ({ showHiddenFiles: !state.showHiddenFiles })),
 

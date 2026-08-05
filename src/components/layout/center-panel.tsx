@@ -9,10 +9,14 @@ import { canEdit } from '@/lib/file-type';
 import { FileRenderer } from '@/components/files/file-renderer';
 import { FileToolbar } from '@/components/files/file-toolbar';
 import { DirtyGuardDialog } from '@/components/files/dirty-guard-dialog';
+import { VersionHistoryDrawer } from '@/components/files/version-history-drawer';
+import { VersionPreviewArea } from '@/components/files/version-preview-area';
 
 export function CenterPanel() {
   const activeFilePath = useUIStore((s) => s.activeFilePath);
   const fileViewMode = useUIStore((s) => s.fileViewMode);
+  const previewVersionId = useUIStore((s) => s.previewVersionId);
+  const setPreviewVersionId = useUIStore((s) => s.setPreviewVersionId);
   const queryClient = useQueryClient();
   const actions = useFileEditActions();
   const notice = useFileEditStore((s) => s.notice);
@@ -72,8 +76,25 @@ export function CenterPanel() {
         </div>
       )}
 
-      <div className="relative min-h-0 flex-1 overflow-auto">
-        <FileRenderer refreshKey={refreshKey} />
+      <div className="relative min-h-0 flex-1 flex overflow-hidden">
+        {/* 主区：正常编辑/查看，或某历史版本的只读预览 */}
+        <div className="relative min-w-0 flex-1 overflow-auto">
+          {previewVersionId && activeFilePath ? (
+            <VersionPreviewArea
+              path={activeFilePath}
+              versionId={previewVersionId}
+              onRestored={() => {
+                setRefreshKey((k) => k + 1);
+                setPreviewVersionId(null);
+              }}
+              onExit={() => setPreviewVersionId(null)}
+            />
+          ) : (
+            <FileRenderer refreshKey={refreshKey} />
+          )}
+        </div>
+        {/* 右侧版本历史抽屉（可折叠；关闭时返回 null） */}
+        <VersionHistoryDrawer />
       </div>
 
       <DirtyGuardDialog />

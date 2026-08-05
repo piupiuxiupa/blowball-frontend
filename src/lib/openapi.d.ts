@@ -1098,6 +1098,12 @@ export interface components {
             password?: string;
         };
         LoginResponse: {
+            /**
+             * @description The authenticated user's stable id. Used as the `{uuid}` namespace
+             *     for the external office-vers versioning service (frontend connects
+             *     directly; see add-file-versioning change).
+             */
+            user_id: string;
             /** @description Signed JWT to send as `Bearer` in subsequent requests. */
             access_token: string;
             /**

@@ -6,10 +6,12 @@ import { BinaryPlaceholder } from './binary-placeholder';
 
 interface ExcelViewerProps {
   path: string;
+  /** 覆盖预览 URL（如版本字节的 object URL）；省略则用工作区预览端点。 */
+  url?: string;
 }
 
-export function ExcelViewer({ path }: ExcelViewerProps) {
-  const url = getPreviewUrl(path);
+export function ExcelViewer({ path, url: urlOverride }: ExcelViewerProps) {
+  const url = urlOverride ?? getPreviewUrl(path);
   const [sheets, setSheets] = useState<string[]>([]);
   const [activeSheet, setActiveSheet] = useState<string>('');
   const [rows, setRows] = useState<unknown[][]>([]);

@@ -1,9 +1,12 @@
-import { RefreshCw, Save, EyeOff, Pencil, Loader2 } from 'lucide-react';
+import { RefreshCw, Save, EyeOff, Pencil, Loader2, Camera, History } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/ui-store';
+import { useAuthStore } from '@/stores/auth-store';
 import { useFileEditStore } from '@/stores/file-edit-store';
 import { useFileEditActions } from '@/hooks/use-file-edit';
+import { useSnapshotVersion } from '@/hooks/use-file-versioning';
+import { isOfficeVersConfigured } from '@/lib/office-vers';
 import { canEdit, getFileExtension, isOffice } from '@/lib/file-type';
 
 interface FileToolbarProps {
@@ -20,11 +23,17 @@ export function FileToolbar({ onRefresh, isRefreshing }: FileToolbarProps) {
   const activeFilePath = useUIStore((s) => s.activeFilePath);
   const fileViewMode = useUIStore((s) => s.fileViewMode);
   const setFileViewMode = useUIStore((s) => s.setFileViewMode);
+  const versionDrawerOpen = useUIStore((s) => s.versionDrawerOpen);
+  const setVersionDrawerOpen = useUIStore((s) => s.setVersionDrawerOpen);
   const isDirty = useFileEditStore((s) =>
     activeFilePath ? s.dirtyByPath[activeFilePath] === true : false
   );
   const saving = useFileEditStore((s) => s.saving);
   const actions = useFileEditActions();
+  const userId = useAuthStore((s) => s.userId);
+  const snapshot = useSnapshotVersion();
+  // 版本能力仅在已登录且 office-vers 已配置时可用。
+  const versioningEnabled = !!userId && isOfficeVersConfigured();
 
   if (!activeFilePath) {
     return (
@@ -38,6 +47,21 @@ export function FileToolbar({ onRefresh, isRefreshing }: FileToolbarProps) {
   const editable = canEdit(activeFilePath); // 文本可编辑（Monaco + PUT/content）
   const supportsMode = editable || isOffice(ext); // 文本编辑 或 Office（OnlyOffice）
   const inEdit = fileViewMode === 'edit';
+
+  // 记录版本：文本 dirty 时拦截提示（Office 无 dirty，直取已落盘内容）。
+  const handleSnapshot = async () => {
+    if (!activeFilePath) return;
+    if (canEdit(activeFilePath) && isDirty) {
+      alert('当前有未保存改动，请先保存后再记录版本');
+      return;
+    }
+    try {
+      await snapshot.mutateAsync({ path: activeFilePath });
+      alert('已记录版本');
+    } catch (err) {
+      alert(`记录版本失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   return (
     <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-white/50 bg-white/20 px-4 text-sm text-muted-foreground backdrop-blur-sm">
@@ -84,6 +108,36 @@ export function FileToolbar({ onRefresh, isRefreshing }: FileToolbarProps) {
             )}
             保存
           </Button>
+        )}
+
+        {versioningEnabled && (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2.5"
+              onClick={() => void handleSnapshot()}
+              disabled={snapshot.isPending}
+              title="把当前文件记录为一个版本"
+            >
+              {snapshot.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Camera className="h-3.5 w-3.5" />
+              )}
+              记录版本
+            </Button>
+            <Button
+              variant={versionDrawerOpen ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-7 px-2.5"
+              onClick={() => setVersionDrawerOpen(!versionDrawerOpen)}
+              title="版本历史"
+            >
+              <History className="h-3.5 w-3.5" />
+              历史
+            </Button>
+          </>
         )}
 
         <Button

@@ -3,7 +3,7 @@ import { apiPost, type LoginRequest, type LoginResponse } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth-store';
 
 export function useAuth() {
-  const { token, isAuthenticated, login, logout } = useAuthStore();
+  const { token, userId, isAuthenticated, login, logout } = useAuthStore();
 
   const loginMutation = useMutation({
     mutationFn: async (credentials: LoginRequest) => {
@@ -14,12 +14,13 @@ export function useAuth() {
       return response;
     },
     onSuccess: (data) => {
-      login(data.access_token, data.expire);
+      login(data.access_token, data.expire, data.user_id);
     },
   });
 
   return {
     token,
+    userId,
     isAuthenticated,
     login: loginMutation.mutateAsync,
     isLoggingIn: loginMutation.isPending,

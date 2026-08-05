@@ -6,10 +6,12 @@ import { BinaryPlaceholder } from './binary-placeholder';
 
 interface WordViewerProps {
   path: string;
+  /** 覆盖预览 URL（如版本字节的 object URL）；省略则用工作区预览端点。 */
+  url?: string;
 }
 
-export function WordViewer({ path }: WordViewerProps) {
-  const url = getPreviewUrl(path);
+export function WordViewer({ path, url: urlOverride }: WordViewerProps) {
+  const url = urlOverride ?? getPreviewUrl(path);
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const ext = getFileExtension(path);

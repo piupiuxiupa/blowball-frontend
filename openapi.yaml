@@ -55,8 +55,14 @@ components:
             in passwordless mode the password, if sent, is ignored.
     LoginResponse:
       type: object
-      required: [access_token, expire, token_type]
+      required: [access_token, expire, token_type, user_id]
       properties:
+        user_id:
+          type: string
+          description: |
+            The authenticated user's stable id. Used as the `{uuid}` namespace
+            for the external office-vers versioning service (frontend connects
+            directly; see add-file-versioning change).
         access_token:
           type: string
           description: Signed JWT to send as `Bearer` in subsequent requests.
