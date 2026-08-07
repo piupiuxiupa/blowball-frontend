@@ -10,6 +10,12 @@ interface StreamEvent {
   type: string;
   agent: string;
   content?: string;
+  // tool_call 事件：content=工具名，参数在 meta.args（见 openapi SSEToolCall）。
+  meta?: {
+    args?: unknown;
+    tool_call_id?: string;
+    [key: string]: unknown;
+  };
 }
 
 function buildOptimisticUserMessage(sessionId: string, content: string, messages: Message[]): Message {
@@ -156,10 +162,20 @@ export function useSendMessage() {
                 scheduleFlush();
               }
               break;
-            case 'tool_call':
-              // 立即落段（不经节流缓冲）：记入活动段 toolCalls 并置 tool_call 状态。
-              pushSegmentToolCall(sessionId, payload.agent, payload.content ?? '');
+            case 'tool_call': {
+              // SSE 的 tool_call：content=工具名、参数在 meta.args（见 openapi SSEToolCall）。
+              // 持久化路径存的是 {"tool_call_id","name","args"} JSON（后端 event_mapper.go），
+              // ToolCallBubble.parseToolCall 据此解析出工具名+参数。流式需组装成同样格式，
+              // 否则只存了工具名，parseToolCall 拿不到参数，表现为流式期间「无参数」。
+              const meta = payload.meta ?? {};
+              const record = JSON.stringify({
+                tool_call_id: typeof meta.tool_call_id === 'string' ? meta.tool_call_id : '',
+                name: payload.content ?? '',
+                args: meta.args ?? {},
+              });
+              pushSegmentToolCall(sessionId, payload.agent, record);
               break;
+            }
             case 'agent_end':
               // 先 flush 该 agent 的待落缓冲，再置 idle——否则置 idle 后待 flush 的 token
               // 会因找不到活动段而被惰性建段，产生重复的孤立 running 段（与 agent_error 同理）。
