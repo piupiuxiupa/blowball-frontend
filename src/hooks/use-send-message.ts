@@ -10,7 +10,9 @@ interface StreamEvent {
   type: string;
   agent: string;
   content?: string;
-  // tool_call 事件：content=工具名，参数在 meta.args（见 openapi SSEToolCall）。
+  // tool_call：content=工具名，参数在 meta.args（见 openapi SSEToolCall）。
+  // tool_result：content 是工具结果状态信封 JSON 串（{"status":0,"result":...} /
+  // {"status":1,"error":...}），meta.tool_call_id 关联对应 tool_call（见 openapi SSEToolResult）。
   meta?: {
     args?: unknown;
     tool_call_id?: string;
@@ -163,10 +165,9 @@ export function useSendMessage() {
               }
               break;
             case 'tool_call': {
-              // SSE 的 tool_call：content=工具名、参数在 meta.args（见 openapi SSEToolCall）。
-              // 持久化路径存的是 {"tool_call_id","name","args"} JSON（后端 event_mapper.go），
-              // ToolCallBubble.parseToolCall 据此解析出工具名+参数。流式需组装成同样格式，
-              // 否则只存了工具名，parseToolCall 拿不到参数，表现为流式期间「无参数」。
+              // SSE 的 tool_call：content=工具名、参数在 meta.args。组装成与持久化一致的
+              // {"tool_call_id","name","args"} JSON（后端 event_mapper.go 同此格式），否则
+              // parseToolCall 拿不到参数，表现为流式期间「无参数」。
               const meta = payload.meta ?? {};
               const record = JSON.stringify({
                 tool_call_id: typeof meta.tool_call_id === 'string' ? meta.tool_call_id : '',
@@ -174,6 +175,14 @@ export function useSendMessage() {
                 args: meta.args ?? {},
               });
               pushSegmentToolCall(sessionId, payload.agent, record);
+              break;
+            }
+            case 'tool_result': {
+              // SSE 的 tool_result（见 openapi SSEToolResult）：content 即工具结果的状态信封
+              // JSON 串——registry 工具为 {"status":0,"result":...} / {"status":1,"error":...}，
+              // invoke_* 子 agent 分发为子 agent 输出原文。直接并入活动段 toolCalls，由
+              // ToolCallBubble.parseToolCall 识别为「工具结果」，并在 status===1 时整卡标红。
+              pushSegmentToolCall(sessionId, payload.agent, payload.content ?? '');
               break;
             }
             case 'agent_end':

@@ -320,15 +320,15 @@ export interface paths {
                 /**
                  * @description Server-Sent Events stream. Each event is two lines:
                  *     `event: <type>` and `data: <json>` followed by a blank line.
-                 *     Event types: `agent_start`, `token`, `reasoning`, `tool_call`, `agent_end`,
-                 *     `agent_error`, `done`. The `done` event is always the final event.
+                 *     Event types: `agent_start`, `token`, `reasoning`, `tool_call`, `tool_result`,
+                 *     `agent_end`, `agent_error`, `done`. The `done` event is always the final event.
                  */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "text/event-stream": components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEReasoning"] | components["schemas"]["SSEToolCall"] | components["schemas"]["SSEAgentEnd"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEDone"];
+                        "text/event-stream": components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEReasoning"] | components["schemas"]["SSEToolCall"] | components["schemas"]["SSEToolResult"] | components["schemas"]["SSEAgentEnd"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEDone"];
                     };
                 };
                 400: components["responses"]["BadRequest"];
@@ -635,18 +635,21 @@ export interface paths {
             };
         };
         /**
-         * Create an empty file or directory (strict create).
-         * @description Strict create of an empty leaf selected by the body {"type": "file"
-         *     | "directory"}. A target leaf that already exists — file OR directory —
-         *     is rejected with 409 ALREADY_EXISTS and left untouched (file creation
-         *     uses OpenFile(O_CREATE|O_EXCL) and directory creation uses os.Mkdir, so
-         *     there is no check-then-create window). Missing parent directories are
-         *     auto-created (MkdirAll on the parent), so a nested path like a/b/c is
-         *     established in one call; the strict guarantee applies only to the leaf.
-         *     This is distinct from PUT .../content, which is a create-or-replace for
-         *     text content — Create produces empty nodes only. Creating the workspace
-         *     root itself (empty/"/" path) is rejected with 400 BAD_REQUEST; a missing
-         *     or invalid type returns 400.
+         * Create an empty workspace file or directory.
+         * @description Strict create of an empty file or directory selected by the body
+         *     {"type": "file" | "directory"}. The path comes from the URL catch-all
+         *     (like Rename, whose params live in the body). "Strict" means a target leaf
+         *     that already exists — file OR directory — is rejected with 409
+         *     ALREADY_EXISTS and left untouched; there is no check-then-create window,
+         *     because file creation uses OpenFile(O_CREATE|O_EXCL) and directory
+         *     creation uses os.Mkdir, both of which surface EEXIST on an existing leaf
+         *     (so two concurrent creates of the same path resolve as one 200 and one
+         *     409). Missing parent directories are auto-created (MkdirAll on the
+         *     parent), so a nested path (e.g. a/b/c) is established in one call; the
+         *     strict guarantee applies only to the leaf itself. This is distinct from
+         *     PUT .../content, which is a create-or-replace for text content — POST
+         *     creates empty nodes only. POST has no /content split, so it registers
+         *     directly on the catch-all with no suffix dispatcher.
          */
         post: {
             parameters: {
@@ -654,7 +657,7 @@ export interface paths {
                 header?: never;
                 path: {
                     /**
-                     * @description Workspace-relative file or directory path (catch-all, may include `/`).
+                     * @description Workspace-relative path of the node to create (catch-all, may include `/`).
                      * @example notes/hello.md
                      */
                     path: string;
@@ -667,7 +670,7 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description Node created. */
+                /** @description Node created; its relative path and kind. */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -676,7 +679,7 @@ export interface paths {
                         "application/json": components["schemas"]["CreateNodeResponse"];
                     };
                 };
-                /** @description Empty/"/" path, or missing/invalid type. */
+                /** @description Creating the workspace root (empty path), or a missing/invalid `type`. */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -687,7 +690,7 @@ export interface paths {
                 };
                 401: components["responses"]["Unauthorized"];
                 403: components["responses"]["Forbidden"];
-                /** @description A leaf (file or directory) already exists at the path. */
+                /** @description A file or directory already exists at the target leaf. */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -1088,11 +1091,20 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List the combined MCP tool catalogue.
-         * @description Returns the combined tool catalogue: regular Xizhi registry tools,
-         *     tools advertised by configured external MCP servers, and the synthetic
-         *     `invoke_chongzhi` / `invoke_liang` agent-invocation tools. Each entry
-         *     follows the OpenAI function-tool shape (`type: function`).
+         * List the MCP-sourced tool catalogue.
+         * @description Returns only MCP-sourced tools. The catalogue has two parts: proxy
+         *     tools advertised by configured operator (global) MCP servers, and the
+         *     cached tools of the caller's per-user MCP servers (read from the
+         *     workspace config cache; no live connections are made). Built-in tools
+         *     (`xizhi_*`, `webfetch`, executor, `luban_*`) and synthetic `invoke_*`
+         *     dispatch tools are excluded. Each entry follows the OpenAI
+         *     function-tool shape (`type: function`) and carries a `server` field
+         *     attributing it to its MCP source (an operator server name or a
+         *     per-user server name). The per-user view is cache-based; freshness is
+         *     maintained by the agent-runtime cache writers (`mcp_list_tools`,
+         *     `mcp_add_server`, `mcp_call`). A missing/empty per-user config yields
+         *     only the operator tools; a single malformed per-user server is
+         *     omitted while the rest still return.
          */
         get: {
             parameters: {
@@ -1183,11 +1195,7 @@ export interface components {
             password?: string;
         };
         LoginResponse: {
-            /**
-             * @description The authenticated user's stable id. Used as the `{uuid}` namespace
-             *     for the external office-vers versioning service (frontend connects
-             *     directly; see add-file-versioning change).
-             */
+            /** @description The authenticated user's unique ID. */
             user_id: string;
             /** @description Signed JWT to send as `Bearer` in subsequent requests. */
             access_token: string;
@@ -1235,7 +1243,7 @@ export interface components {
             /** @enum {string} */
             role: "user" | "assistant" | "tool" | "";
             /** @enum {string} */
-            event_type: "message" | "token" | "tool_call" | "agent_start" | "agent_end" | "agent_error" | "reasoning";
+            event_type: "message" | "token" | "tool_call" | "tool_result" | "agent_start" | "agent_end" | "agent_error" | "reasoning";
             content: string;
             /** Format: uuid */
             trace_id: string;
@@ -1277,9 +1285,31 @@ export interface components {
             /** @description Tool name. */
             content: string;
             meta?: {
+                /** @description Correlates this call with its tool_result event. */
+                tool_call_id: string;
                 args?: {
                     [key: string]: unknown;
                 };
+            };
+        };
+        /**
+         * @description Outcome of a tool invocation. Pairs with the preceding `tool_call` event
+         *     via `meta.tool_call_id`. `content` is the same string fed back to the
+         *     model as the role="tool" message body: for registry tools the uniform
+         *     status envelope `{"status":0,"result":...}` / `{"status":1,"error":...}`;
+         *     for invoke_* sub-agent dispatches, the sub-agent's output (or error text)
+         *     verbatim. A registry-tool failure also fires an independent `agent_error`
+         *     event (code `tool_error`) for the frontend; both channels fire regardless.
+         */
+        SSEToolResult: {
+            /** @enum {string} */
+            type: "tool_result";
+            agent: string;
+            /** @description Serialized tool result (status/result envelope), sub-agent output, or error text. */
+            content: string;
+            meta?: {
+                /** @description Matches the meta.tool_call_id of the originating tool_call event. */
+                tool_call_id: string;
             };
         };
         SSEAgentEnd: {
@@ -1301,12 +1331,45 @@ export interface components {
             /** @enum {string} */
             type: "done";
             meta: {
+                /**
+                 * @description Per-turn token-usage breakdown. Authoritative shape (turn-cost-tracking
+                 *     spec): `{total, by_agent, meta}`.
+                 *
+                 *     `total` is the aggregate turn usage. `by_agent` carries the per-agent
+                 *     attribution keyed by agent display name (always includes "Confucius",
+                 *     plus one entry per dispatched sub-agent). `meta` records turn-level
+                 *     orchestration facts: `parallel` (true when any assistant round
+                 *     dispatched >=2 tool_calls) and `sub_agent_invocations` (the invoke_*
+                 *     tool names dispatched this turn, in dispatch order, deduplicated).
+                 *
+                 *     Legacy flat top-level fields (`prompt_tokens`, `completion_tokens`,
+                 *     `total_tokens`, `reasoning_tokens`) have been MOVED under `total`;
+                 *     consumers reading `usage.total_tokens` must migrate to
+                 *     `usage.total.total_tokens`.
+                 */
                 usage: {
-                    prompt_tokens: number;
-                    completion_tokens: number;
-                    total_tokens: number;
+                    total: components["schemas"]["SSEUsageTokens"];
+                    /** @description Per-agent usage keyed by agent display name (Confucius, Chongzhi, Liang). */
+                    by_agent: {
+                        [key: string]: components["schemas"]["SSEUsageTokens"];
+                    };
+                    meta: {
+                        /** @description invoke_* tool names dispatched this turn, dispatch order, deduplicated. */
+                        sub_agent_invocations: string[];
+                        /** @description True when any assistant round dispatched >=2 tool_calls. */
+                        parallel: boolean;
+                    };
+                    /** @description Present only when the turn completed with an error; the failure message. */
+                    error?: string;
                 };
             };
+        };
+        SSEUsageTokens: {
+            prompt_tokens: number;
+            completion_tokens: number;
+            total_tokens: number;
+            /** @description Present only for thinking/reasoning runs (reasoning_tokens > 0). */
+            reasoning_tokens?: number;
         };
         FileEntry: {
             name: string;
@@ -1369,12 +1432,14 @@ export interface components {
             old_path: string;
             new_path: string;
         };
-        /** @description Body for POST .../files/{path} (strict create of an empty node). */
+        /**
+         * @description Body for POST .../files/{path}. The target path comes from the URL
+         *     catch-all (like Rename); the body selects whether to create a file or a
+         *     directory. The created node is empty — content writes use PUT .../content.
+         */
         CreateNodeRequest: {
             /**
-             * @description Leaf kind to create. "file" → empty file (O_CREATE|O_EXCL);
-             *     "directory" → empty directory (os.Mkdir). Note this uses "directory",
-             *     not the "dir" shorthand used in FileEntry.type.
+             * @description Kind of node to create. Strict create: an existing leaf of either kind returns 409 ALREADY_EXISTS.
              * @enum {string}
              */
             type: "file" | "directory";
@@ -1383,7 +1448,10 @@ export interface components {
         CreateNodeResponse: {
             /** @description Workspace-relative path of the created node. */
             path: string;
-            /** @enum {string} */
+            /**
+             * @description Kind of node created (echoes the request type).
+             * @enum {string}
+             */
             type: "file" | "directory";
         };
         MCPTool: {
@@ -1398,6 +1466,8 @@ export interface components {
             parameters: {
                 [key: string]: unknown;
             };
+            /** @description The MCP source this tool belongs to — an operator (global) MCP server name or a per-user MCP server name. */
+            server: string;
         };
         MCPToolsResponse: {
             tools: components["schemas"]["MCPTool"][];
@@ -1433,26 +1503,6 @@ export interface components {
             view: components["schemas"]["OnlyOfficeModeConfig"];
         };
         /**
-         * @description Server-signed OnlyOffice DocEditor config for viewing a specific
-         *     historical version (view-only). Mirrors one mode of
-         *     OnlyOfficeConfigResponse — a single `{config, token}` pair nested under
-         *     `view` — so the frontend reuses its existing `view` consumption path. A
-         *     historical version is immutable, so only the view mode is returned (no
-         *     edit). `document.url` points at the external office-vers service
-         *     (`{version_service_url}/documents/{userUUID}/{path}?action=version&versionId=<vid>`)
-         *     and carries NO credential (office-vers is unauthenticated by design);
-         *     `document.key` is derived deterministically from `(path, versionId)`
-         *     (`base32(sha256(path + ":" + versionId))`) so OnlyOffice caches and shares
-         *     the conversion across opens/users; the config carries no `callbackUrl`
-         *     and no `customization.forcesave` (nothing to save back to an immutable
-         *     version).
-         */
-        OnlyOfficeVersionConfigResponse: {
-            /** @description Browser-facing DocumentServer origin (api.js is loaded from here). */
-            server_url: string;
-            view: components["schemas"]["OnlyOfficeModeConfig"];
-        };
-        /**
          * @description One signed DocEditor config (edit or view). `config` is the editor
          *     config object; `token` is the HS256 JWT signing exactly that `config`
          *     with the OnlyOffice secret. The edit and view tokens are distinct.
@@ -1475,6 +1525,26 @@ export interface components {
             };
             /** @description HS256 JWT signing this mode's `config` with the OnlyOffice secret; edit and view tokens differ. */
             token: string;
+        };
+        /**
+         * @description Server-signed OnlyOffice DocEditor config for viewing a specific
+         *     historical version (view-only). Mirrors one mode of
+         *     OnlyOfficeConfigResponse — a single `{config, token}` pair nested under
+         *     `view` — so the frontend reuses its existing `view` consumption path. A
+         *     historical version is immutable, so only the view mode is returned (no
+         *     edit). `document.url` points at the external office-vers service
+         *     (`{version_service_url}/documents/{userUUID}/{path}?action=version&versionId=<vid>`)
+         *     and carries NO credential (office-vers is unauthenticated by design);
+         *     `document.key` is derived deterministically from `(path, versionId)`
+         *     (`base32(sha256(path + ":" + versionId))`) so OnlyOffice caches and shares
+         *     the conversion across opens/users; the config carries no `callbackUrl`
+         *     and no `customization.forcesave` (nothing to save back to an immutable
+         *     version).
+         */
+        OnlyOfficeVersionConfigResponse: {
+            /** @description Browser-facing DocumentServer origin (api.js is loaded from here). */
+            server_url: string;
+            view: components["schemas"]["OnlyOfficeModeConfig"];
         };
         /**
          * @description OnlyOffice DocumentServer save callback. `status` 2/6 carry the edited

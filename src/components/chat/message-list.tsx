@@ -64,8 +64,10 @@ function groupMessages(messages: Message[]): MessageBlock[] {
       if (current) {
         current.isError = true;
         current.content += `\n\n[错误] ${msg.content}`;
-        blocks.push(current);
-        current = null;
+        // 不关闭块：对齐流式 setSegmentStatus（仅置 error，不结束段）。工具失败时后端
+        // 会紧跟一条 tool_result（见 openapi SSEToolResult），若此处 push 并置 null，
+        // 该 tool_result 会因无 current 挂载而丢失，历史里就看不到标红的工具结果气泡。
+        // 块由后续 agent_end / agent_start / user 消息正常收尾。
       } else {
         blocks.push({
           id: `error-${msg.id}`,
@@ -79,7 +81,10 @@ function groupMessages(messages: Message[]): MessageBlock[] {
       continue;
     }
 
-    if (msg.event_type === 'tool_call') {
+    // tool_call = 工具调用（{tool_call_id,name,args}）；tool_result = 工具执行结果
+    // （{tool_call_id,output:{result,status}}）。两者都作为独立气泡并入 toolCalls，
+    // 由 ToolCallBubble.parseToolCall 区分形态，结果型在 output.status===1 时整卡标红。
+    if (msg.event_type === 'tool_call' || msg.event_type === 'tool_result') {
       if (current) {
         current.toolCalls.push(msg.content);
       }

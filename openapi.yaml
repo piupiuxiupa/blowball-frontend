@@ -55,14 +55,11 @@ components:
             in passwordless mode the password, if sent, is ignored.
     LoginResponse:
       type: object
-      required: [access_token, expire, token_type, user_id]
+      required: [user_id, access_token, expire, token_type]
       properties:
         user_id:
           type: string
-          description: |
-            The authenticated user's stable id. Used as the `{uuid}` namespace
-            for the external office-vers versioning service (frontend connects
-            directly; see add-file-versioning change).
+          description: The authenticated user's unique ID.
         access_token:
           type: string
           description: Signed JWT to send as `Bearer` in subsequent requests.
@@ -126,7 +123,7 @@ components:
           enum: [user, assistant, tool, ""]
         event_type:
           type: string
-          enum: [message, token, tool_call, agent_start, agent_end, agent_error, reasoning]
+          enum: [message, token, tool_call, tool_result, agent_start, agent_end, agent_error, reasoning]
         content:
           type: string
         trace_id:
@@ -184,8 +181,30 @@ components:
         content: {type: string, description: Tool name.}
         meta:
           type: object
+          required: [tool_call_id]
           properties:
+            tool_call_id: {type: string, description: Correlates this call with its tool_result event.}
             args: {type: object, additionalProperties: true}
+    SSEToolResult:
+      type: object
+      required: [type, agent, content]
+      description: |
+        Outcome of a tool invocation. Pairs with the preceding `tool_call` event
+        via `meta.tool_call_id`. `content` is the same string fed back to the
+        model as the role="tool" message body: for registry tools the uniform
+        status envelope `{"status":0,"result":...}` / `{"status":1,"error":...}`;
+        for invoke_* sub-agent dispatches, the sub-agent's output (or error text)
+        verbatim. A registry-tool failure also fires an independent `agent_error`
+        event (code `tool_error`) for the frontend; both channels fire regardless.
+      properties:
+        type: {type: string, enum: [tool_result]}
+        agent: {type: string}
+        content: {type: string, description: "Serialized tool result (status/result envelope), sub-agent output, or error text."}
+        meta:
+          type: object
+          required: [tool_call_id]
+          properties:
+            tool_call_id: {type: string, description: Matches the meta.tool_call_id of the originating tool_call event.}
     SSEAgentEnd:
       type: object
       required: [type, agent]
@@ -213,12 +232,55 @@ components:
           required: [usage]
           properties:
             usage:
+              description: |
+                Per-turn token-usage breakdown. Authoritative shape (turn-cost-tracking
+                spec): `{total, by_agent, meta}`.
+
+                `total` is the aggregate turn usage. `by_agent` carries the per-agent
+                attribution keyed by agent display name (always includes "Confucius",
+                plus one entry per dispatched sub-agent). `meta` records turn-level
+                orchestration facts: `parallel` (true when any assistant round
+                dispatched >=2 tool_calls) and `sub_agent_invocations` (the invoke_*
+                tool names dispatched this turn, in dispatch order, deduplicated).
+
+                Legacy flat top-level fields (`prompt_tokens`, `completion_tokens`,
+                `total_tokens`, `reasoning_tokens`) have been MOVED under `total`;
+                consumers reading `usage.total_tokens` must migrate to
+                `usage.total.total_tokens`.
               type: object
-              required: [prompt_tokens, completion_tokens, total_tokens]
+              required: [total, by_agent, meta]
               properties:
-                prompt_tokens: {type: integer}
-                completion_tokens: {type: integer}
-                total_tokens: {type: integer}
+                total:
+                  $ref: '#/components/schemas/SSEUsageTokens'
+                by_agent:
+                  type: object
+                  additionalProperties:
+                    $ref: '#/components/schemas/SSEUsageTokens'
+                  description: Per-agent usage keyed by agent display name (Confucius, Chongzhi, Liang).
+                meta:
+                  type: object
+                  required: [sub_agent_invocations, parallel]
+                  properties:
+                    sub_agent_invocations:
+                      type: array
+                      items: {type: string}
+                      description: invoke_* tool names dispatched this turn, dispatch order, deduplicated.
+                    parallel:
+                      type: boolean
+                      description: True when any assistant round dispatched >=2 tool_calls.
+                error:
+                  type: string
+                  description: Present only when the turn completed with an error; the failure message.
+    SSEUsageTokens:
+      type: object
+      required: [prompt_tokens, completion_tokens, total_tokens]
+      properties:
+        prompt_tokens: {type: integer}
+        completion_tokens: {type: integer}
+        total_tokens: {type: integer}
+        reasoning_tokens:
+          type: integer
+          description: Present only for thinking/reasoning runs (reasoning_tokens > 0).
     FileEntry:
       type: object
       required: [name, type, size, update_time]
@@ -307,25 +369,28 @@ components:
     CreateNodeRequest:
       type: object
       required: [type]
-      description: Body for POST .../files/{path} (strict create of an empty node).
+      description: |
+        Body for POST .../files/{path}. The target path comes from the URL
+        catch-all (like Rename); the body selects whether to create a file or a
+        directory. The created node is empty — content writes use PUT .../content.
       properties:
         type:
           type: string
           enum: [file, directory]
-          description: |
-            Leaf kind to create. "file" → empty file (O_CREATE|O_EXCL);
-            "directory" → empty directory (os.Mkdir). Note this uses "directory",
-            not the "dir" shorthand used in FileEntry.type.
+          description: "Kind of node to create. Strict create: an existing leaf of either kind returns 409 ALREADY_EXISTS."
     CreateNodeResponse:
       type: object
       required: [path, type]
       description: Response for POST .../files/{path}.
       properties:
         path: {type: string, description: Workspace-relative path of the created node.}
-        type: {type: string, enum: [file, directory]}
+        type:
+          type: string
+          enum: [file, directory]
+          description: Kind of node created (echoes the request type).
     MCPTool:
       type: object
-      required: [type, name, description, parameters]
+      required: [type, name, description, parameters, server]
       properties:
         type:
           type: string
@@ -337,6 +402,9 @@ components:
           type: object
           additionalProperties: true
           description: JSON Schema describing the tool's input parameters.
+        server:
+          type: string
+          description: The MCP source this tool belongs to — an operator (global) MCP server name or a per-user MCP server name.
     MCPToolsResponse:
       type: object
       required: [tools]
@@ -388,29 +456,6 @@ components:
           $ref: '#/components/schemas/OnlyOfficeModeConfig'
         view:
           $ref: '#/components/schemas/OnlyOfficeModeConfig'
-    OnlyOfficeVersionConfigResponse:
-      type: object
-      required: [server_url, view]
-      description: |
-        Server-signed OnlyOffice DocEditor config for viewing a specific
-        historical version (view-only). Mirrors one mode of
-        OnlyOfficeConfigResponse — a single `{config, token}` pair nested under
-        `view` — so the frontend reuses its existing `view` consumption path. A
-        historical version is immutable, so only the view mode is returned (no
-        edit). `document.url` points at the external office-vers service
-        (`{version_service_url}/documents/{userUUID}/{path}?action=version&versionId=<vid>`)
-        and carries NO credential (office-vers is unauthenticated by design);
-        `document.key` is derived deterministically from `(path, versionId)`
-        (`base32(sha256(path + ":" + versionId))`) so OnlyOffice caches and shares
-        the conversion across opens/users; the config carries no `callbackUrl`
-        and no `customization.forcesave` (nothing to save back to an immutable
-        version).
-      properties:
-        server_url:
-          type: string
-          description: Browser-facing DocumentServer origin (api.js is loaded from here).
-        view:
-          $ref: '#/components/schemas/OnlyOfficeModeConfig'
     OnlyOfficeModeConfig:
       type: object
       required: [config, token]
@@ -436,6 +481,29 @@ components:
         token:
           type: string
           description: HS256 JWT signing this mode's `config` with the OnlyOffice secret; edit and view tokens differ.
+    OnlyOfficeVersionConfigResponse:
+      type: object
+      required: [server_url, view]
+      description: |
+        Server-signed OnlyOffice DocEditor config for viewing a specific
+        historical version (view-only). Mirrors one mode of
+        OnlyOfficeConfigResponse — a single `{config, token}` pair nested under
+        `view` — so the frontend reuses its existing `view` consumption path. A
+        historical version is immutable, so only the view mode is returned (no
+        edit). `document.url` points at the external office-vers service
+        (`{version_service_url}/documents/{userUUID}/{path}?action=version&versionId=<vid>`)
+        and carries NO credential (office-vers is unauthenticated by design);
+        `document.key` is derived deterministically from `(path, versionId)`
+        (`base32(sha256(path + ":" + versionId))`) so OnlyOffice caches and shares
+        the conversion across opens/users; the config carries no `callbackUrl`
+        and no `customization.forcesave` (nothing to save back to an immutable
+        version).
+      properties:
+        server_url:
+          type: string
+          description: Browser-facing DocumentServer origin (api.js is loaded from here).
+        view:
+          $ref: '#/components/schemas/OnlyOfficeModeConfig'
     OnlyOfficeCallbackRequest:
       type: object
       description: |
@@ -705,8 +773,8 @@ paths:
           description: |
             Server-Sent Events stream. Each event is two lines:
             `event: <type>` and `data: <json>` followed by a blank line.
-            Event types: `agent_start`, `token`, `reasoning`, `tool_call`, `agent_end`,
-            `agent_error`, `done`. The `done` event is always the final event.
+            Event types: `agent_start`, `token`, `reasoning`, `tool_call`, `tool_result`,
+            `agent_end`, `agent_error`, `done`. The `done` event is always the final event.
           content:
             text/event-stream:
               schema:
@@ -715,6 +783,7 @@ paths:
                   - $ref: '#/components/schemas/SSEToken'
                   - $ref: '#/components/schemas/SSEReasoning'
                   - $ref: '#/components/schemas/SSEToolCall'
+                  - $ref: '#/components/schemas/SSEToolResult'
                   - $ref: '#/components/schemas/SSEAgentEnd'
                   - $ref: '#/components/schemas/SSEAgentError'
                   - $ref: '#/components/schemas/SSEDone'
@@ -976,25 +1045,28 @@ paths:
           $ref: '#/components/responses/Internal'
     post:
       tags: [Workspace]
-      summary: Create an empty file or directory (strict create).
+      summary: Create an empty workspace file or directory.
       description: |
-        Strict create of an empty leaf selected by the body {"type": "file"
-        | "directory"}. A target leaf that already exists — file OR directory —
-        is rejected with 409 ALREADY_EXISTS and left untouched (file creation
-        uses OpenFile(O_CREATE|O_EXCL) and directory creation uses os.Mkdir, so
-        there is no check-then-create window). Missing parent directories are
-        auto-created (MkdirAll on the parent), so a nested path like a/b/c is
-        established in one call; the strict guarantee applies only to the leaf.
-        This is distinct from PUT .../content, which is a create-or-replace for
-        text content — Create produces empty nodes only. Creating the workspace
-        root itself (empty/"/" path) is rejected with 400 BAD_REQUEST; a missing
-        or invalid type returns 400.
+        Strict create of an empty file or directory selected by the body
+        {"type": "file" | "directory"}. The path comes from the URL catch-all
+        (like Rename, whose params live in the body). "Strict" means a target leaf
+        that already exists — file OR directory — is rejected with 409
+        ALREADY_EXISTS and left untouched; there is no check-then-create window,
+        because file creation uses OpenFile(O_CREATE|O_EXCL) and directory
+        creation uses os.Mkdir, both of which surface EEXIST on an existing leaf
+        (so two concurrent creates of the same path resolve as one 200 and one
+        409). Missing parent directories are auto-created (MkdirAll on the
+        parent), so a nested path (e.g. a/b/c) is established in one call; the
+        strict guarantee applies only to the leaf itself. This is distinct from
+        PUT .../content, which is a create-or-replace for text content — POST
+        creates empty nodes only. POST has no /content split, so it registers
+        directly on the catch-all with no suffix dispatcher.
       parameters:
         - name: path
           in: path
           required: true
           schema: {type: string}
-          description: Workspace-relative file or directory path (catch-all, may include `/`).
+          description: Workspace-relative path of the node to create (catch-all, may include `/`).
           example: notes/hello.md
       requestBody:
         required: true
@@ -1006,24 +1078,28 @@ paths:
               directory: {value: {type: directory}}
       responses:
         '200':
-          description: Node created.
+          description: Node created; its relative path and kind.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/CreateNodeResponse'}
+              examples:
+                file:      {value: {path: notes/hello.md, type: file}}
+                directory: {value: {path: notes/hello.md, type: directory}}
         '400':
-          description: Empty/"/" path, or missing/invalid type.
+          description: |
+            Creating the workspace root (empty path), or a missing/invalid `type`.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
               examples:
-                missingPath: {value: {error: {code: BAD_REQUEST, message: "path is required"}}}
-                badType:     {value: {error: {code: BAD_REQUEST, message: "type must be \"file\" or \"directory\""}}}
+                badType:  {value: {error: {code: BAD_REQUEST, message: "type must be \"file\" or \"directory\""}}}
+                rootPath: {value: {error: {code: BAD_REQUEST, message: "path is required"}}}
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          description: A leaf (file or directory) already exists at the path.
+          description: A file or directory already exists at the target leaf.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -1273,12 +1349,21 @@ paths:
   /api/v1/mcp/tools:
     get:
       tags: [MCP]
-      summary: List the combined MCP tool catalogue.
+      summary: List the MCP-sourced tool catalogue.
       description: |
-        Returns the combined tool catalogue: regular Xizhi registry tools,
-        tools advertised by configured external MCP servers, and the synthetic
-        `invoke_chongzhi` / `invoke_liang` agent-invocation tools. Each entry
-        follows the OpenAI function-tool shape (`type: function`).
+        Returns only MCP-sourced tools. The catalogue has two parts: proxy
+        tools advertised by configured operator (global) MCP servers, and the
+        cached tools of the caller's per-user MCP servers (read from the
+        workspace config cache; no live connections are made). Built-in tools
+        (`xizhi_*`, `webfetch`, executor, `luban_*`) and synthetic `invoke_*`
+        dispatch tools are excluded. Each entry follows the OpenAI
+        function-tool shape (`type: function`) and carries a `server` field
+        attributing it to its MCP source (an operator server name or a
+        per-user server name). The per-user view is cache-based; freshness is
+        maintained by the agent-runtime cache writers (`mcp_list_tools`,
+        `mcp_add_server`, `mcp_call`). A missing/empty per-user config yields
+        only the operator tools; a single malformed per-user server is
+        omitted while the rest still return.
       responses:
         '200':
           description: Tool list.
