@@ -1298,8 +1298,9 @@ export interface components {
          *     model as the role="tool" message body: for registry tools the uniform
          *     status envelope `{"status":0,"result":...}` / `{"status":1,"error":...}`;
          *     for invoke_* sub-agent dispatches, the sub-agent's output (or error text)
-         *     verbatim. A registry-tool failure also fires an independent `agent_error`
-         *     event (code `tool_error`) for the frontend; both channels fire regardless.
+         *     verbatim. The status envelope is the sole channel for a registry-tool
+         *     failure: no `agent_error` event is emitted for tool errors (the frontend
+         *     renders tool errors from `content`'s `status` field).
          */
         SSEToolResult: {
             /** @enum {string} */
@@ -1317,6 +1318,15 @@ export interface components {
             type: "agent_end";
             agent: string;
         };
+        /**
+         * @description An agent-level failure or control signal. NOT emitted for registry-tool
+         *     failures (those are carried solely by the SSEToolResult status envelope).
+         *     `meta.error_code` is one of: `llm_error` (LLM call failed), `unknown_tool`
+         *     (no tool registry / unknown sub-agent tool), `bad_args` (malformed
+         *     sub-agent invoke arguments), `retry` (in-progress sub-agent retry, paired
+         *     with `meta.retry=true`), `round_cap_exhausted` (round-cap wrap-up round
+         *     produced no content).
+         */
         SSEAgentError: {
             /** @enum {string} */
             type: "agent_error";
