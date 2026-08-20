@@ -344,11 +344,9 @@ export interface paths {
                 /**
                  * @description Malformed body, or a rejected per-request model selection
                  *     (per-request-model-selection): `INVALID_MODEL` (unknown catalog
-                 *     name, or any `model`/`reasoning_effort` value while no
-                 *     `openai.models` catalog is configured) or `INVALID_EFFORT`
-                 *     (invalid effort value, non-`none` effort on a `thinking: false`
-                 *     model, effort conflicting with a configured agent
-                 *     `output_schema`, or any value without a catalog).
+                 *     name) or `INVALID_EFFORT` (invalid effort value, non-`none`
+                 *     effort explicitly requested on a `thinking: false` entry, or an
+                 *     effort conflicting with a configured agent `output_schema`).
                  */
                 400: {
                     headers: {
@@ -1350,13 +1348,11 @@ export interface paths {
         };
         /**
          * List the selectable model catalog (per-request-model-selection).
-         * @description Returns the deployment's model catalog (`openai.models`) and the
-         *     default model name for chat-request `model`/`reasoning_effort`
+         * @description Returns the deployment's model catalog (`openai.models`, mandatory),
+         *     the default model name, and the deployment default reasoning effort
+         *     (`default_reasoning_effort`) for chat-request `model`/`reasoning_effort`
          *     selection. Served by the api role only (the agent role does not
-         *     register this endpoint). When no catalog is configured the response
-         *     still carries one synthesized entry (the legacy `openai.model` +
-         *     `openai.max_context_tokens`), so clients need no forking — but
-         *     request parameters are rejected with 400 in that mode.
+         *     register this endpoint).
          */
         get: {
             parameters: {
@@ -1493,26 +1489,23 @@ export interface components {
             /** @description User message text (must be non-empty). */
             content: string;
             /**
-             * @description Selects the turn's model from the `openai.models` catalog
-             *     (per-request-model-selection). The selection applies uniformly to
-             *     all three agents (same model, same thinking mode); per-agent
-             *     `agents.<name>.model` configs keep driving turns that omit the
-             *     parameter. When `model` is set, the turn's thinking configuration
-             *     is fully derived from the catalog entry and `reasoning_effort`
-             *     (agent-level thinking/effort config does not participate that
-             *     turn). Unknown names — and any value when no catalog is
-             *     configured — return 400 `INVALID_MODEL`.
+             * @description Selects the turn's model from the mandatory `openai.models`
+             *     catalog (per-request-model-selection). The selection applies
+             *     uniformly to all three agents; omitted → the default entry
+             *     (`openai.default_model`, else the first entry). Unknown names
+             *     return 400 `INVALID_MODEL`.
              */
             model?: string;
             /**
-             * @description Selects the turn's thinking level. `none` turns thinking off (no
-             *     `reasoning_effort` sent to the provider). A non-`none` value
-             *     requires a catalog entry with `thinking: true`; `model` omitted
-             *     resolves against the default entry. Invalid values, values on a
-             *     non-thinking model, and any value when no catalog is configured
-             *     return 400 `INVALID_EFFORT`. When only `model` is sent the effort
-             *     derives from the entry (thinking → `medium`, non-thinking →
-             *     `none`).
+             * @description Selects the turn's thinking level; omitted → the deployment
+             *     default (`openai.default_reasoning_effort`, itself defaulting to
+             *     `none`). On a `thinking: true` entry, `none` is sent to the
+             *     provider as a literal value (it does NOT mean "omit the
+             *     parameter") — compatible gateways then disable thinking for the
+             *     turn. A non-`none` value explicitly requested on a
+             *     `thinking: false` entry returns 400 `INVALID_EFFORT`; a
+             *     non-`none` deployment default landing on such an entry is clamped
+             *     to `none` (WARN) and the turn proceeds.
              * @enum {string}
              */
             reasoning_effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -1802,18 +1795,23 @@ export interface components {
         /**
          * @description The selectable model catalog (per-request-model-selection). `thinking`
          *     tells clients whether `reasoning_effort` values other than `none` are
-         *     valid for the model. The same response shape is returned with and
-         *     without a configured `openai.models` catalog (the latter synthesizes
-         *     one entry from the legacy `openai.model`/`openai.max_context_tokens`).
-         *     Each turn's resolved model is recorded in run meta
-         *     (`GET .../turns/{run_id}/events` payloads) and the `turn_usage` table's
-         *     `model` column (NULL on pre-migration rows) for per-model cost
-         *     aggregation.
+         *     valid for the model (and which wire family the model uses).
+         *     `default_reasoning_effort` is the deployment-level default thinking
+         *     effort (`openai.default_reasoning_effort`, `"none"` when unset) — the
+         *     natural preselection for an effort picker. Each turn's resolved model
+         *     is recorded in run meta (`GET .../turns/{run_id}/events` payloads) and
+         *     the `turn_usage` table's `model` column (NULL on pre-migration rows)
+         *     for per-model cost aggregation.
          */
         ModelsResponse: {
             models: components["schemas"]["ModelEntry"][];
-            /** @description The default model name (openai.default_model, first entry, or openai.model). */
+            /** @description The default model name (openai.default_model, else the first catalog entry). */
             default: string;
+            /**
+             * @description The deployment default reasoning effort applied to requests that omit `reasoning_effort`.
+             * @enum {string}
+             */
+            default_reasoning_effort: "none" | "low" | "medium" | "high" | "xhigh" | "max";
         };
         ModelEntry: {
             /** @description Model name — the value a request's `model` parameter accepts. */
