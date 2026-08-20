@@ -321,6 +321,12 @@ export type SessionListEntry = NonNullable<SessionListResponse['sessions']>[numb
 // 与幂等取消已终局 run 时上报的终态。
 export type TurnStatusResponse =
   paths['/api/v1/sessions/{session_id}/turns/{run_id}/cancel']['post']['responses']['200']['content']['application/json'];
+// GET /api/v1/models(api 分区):可选模型目录与缺省名。无目录部署时后端合成单条
+// legacy 条目,此时发送侧显式传 model/reasoning_effort 会 400(per-request-model)。
+export type ModelsResponse = paths['/api/v1/models']['get']['responses']['200']['content']['application/json'];
+export type ModelEntry = NonNullable<ModelsResponse['models']>[number];
+// 发送请求的思考等级参数类型(契约枚举含 max;UI 提供其中五档,见 model-selector)。
+export type ReasoningEffort = NonNullable<SendMessageRequest['reasoning_effort']>;
 export type CreateSessionResponse = paths['/api/v1/sessions']['post']['responses']['200']['content']['application/json'];
 export type SessionMessagesResponse =
   paths['/api/v1/sessions/{session_id}/messages']['get']['responses']['200']['content']['application/json'];

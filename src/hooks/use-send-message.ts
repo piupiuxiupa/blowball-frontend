@@ -5,7 +5,7 @@ import { consumeTurnStream, reconcileTurnHistory, clearTurnStreamState } from '@
 import { attachToRun } from '@/hooks/use-turn-lifecycle';
 import { useAuthStore } from '@/stores/auth-store';
 import { useUIStore } from '@/stores/ui-store';
-import type { SendMessageRequest, SessionMessagesResponse, Message } from '@/lib/api';
+import type { SendMessageRequest, SessionMessagesResponse, Message, ReasoningEffort } from '@/lib/api';
 
 // 发送路径：建立流（POST /messages）+ 乐观用户消息 + 收尾 reconcile。
 // 事件消费与缓冲节流在 lib/turn-stream.ts 的共享消费函数中——发送流与 attach 流
@@ -40,9 +40,15 @@ export function useSendMessage() {
     mutationFn: async ({
       sessionId,
       content,
+      model,
+      reasoningEffort,
     }: {
       sessionId: string;
       content: string;
+      // per-request-model:可选的模型目录选择与思考等级;缺省不发参数,由后端按
+      // agents.<name>.model 配置与目录条目派生。
+      model?: string;
+      reasoningEffort?: ReasoningEffort;
     }) => {
       if (!token) throw new Error('Not authenticated');
 
@@ -53,7 +59,11 @@ export function useSendMessage() {
         const response = await apiPostStream(
           `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
           {
-            body: { content } as SendMessageRequest,
+            body: {
+              content,
+              ...(model ? { model } : {}),
+              ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+            } as SendMessageRequest,
             token,
             signal,
           }
@@ -102,6 +112,15 @@ export function useSendMessage() {
       // attach 接入该 turn（此处乐观消息已回滚，与本轮发送无交集）。
       if (err instanceof ApiRequestError && err.code === 'SESSION_BUSY' && err.runId) {
         void attachToRun(sessionId, err.runId);
+        return;
+      }
+      // 模型/思考等级选择被拒（per-request-model）：目录外名称、非思考模型上非 none
+      // 等级、或部署未配置目录。必须显式告知用户原因,否则表现为「消息发不出去」。
+      if (
+        err instanceof ApiRequestError &&
+        (err.code === 'INVALID_MODEL' || err.code === 'INVALID_EFFORT')
+      ) {
+        alert(`消息被拒绝：${err.message}`);
       }
     },
     onSettled: (_, __, { sessionId }) => {

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { ReasoningEffort } from '@/lib/api';
 
 export type AgentStatus = 'idle' | 'running' | 'tool_call' | 'error';
 
@@ -42,6 +43,10 @@ interface UIState {
   // 取消目标、输入禁用判据、attach 防重都读它；终局/回落时置 null。
   // 最后收到的帧 id（续传用）刻意不放这里，见 lib/turn-stream.ts 的 lastEventIds。
   turnRuns: Record<string, string>;
+  // 下一次发送的模型/思考等级选择（per-request-model）：null = 不发该参数、跟随后端
+  // 缺省（模型按 agents.<name>.model 配置,思考按所选条目派生）。客户端状态,重载即回默认。
+  selectedModel: string | null;
+  selectedEffort: ReasoningEffort | null;
 
   setActiveSession: (id: string | null) => void;
   setActiveFile: (path: string | null) => void;
@@ -51,6 +56,7 @@ interface UIState {
   toggleSidebar: () => void;
   toggleShowHiddenFiles: () => void;
   setTurnRun: (sessionId: string, runId: string | null) => void;
+  setModelSelection: (model: string | null, effort: ReasoningEffort | null) => void;
   startAgentSegment: (sessionId: string, agent: string, runId?: string) => void;
   appendSegmentContent: (sessionId: string, agent: string, runId: string, chunk: string) => void;
   appendSegmentReasoning: (sessionId: string, agent: string, runId: string, chunk: string) => void;
@@ -102,6 +108,8 @@ export const useUIStore = create<UIState>((set) => ({
   showHiddenFiles: false,
   streamingSegments: {},
   turnRuns: {},
+  selectedModel: null,
+  selectedEffort: null,
 
   setActiveSession: (id) => set({ activeSessionId: id }),
   // 切换活动文件时一并退出版本预览（预览绑定的是旧文件的历史版本）。
@@ -123,6 +131,8 @@ export const useUIStore = create<UIState>((set) => ({
       }
       return { turnRuns: { ...state.turnRuns, [sessionId]: runId } };
     }),
+
+  setModelSelection: (model, effort) => set({ selectedModel: model, selectedEffort: effort }),
 
   // agent_start：push 新段、分配单调 id、置 running。活动段即数组末尾。
   // 若该 (agent, runId) 已有活动段（如 token 先于 agent_start 惰性建段），复用它而非再
