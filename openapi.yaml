@@ -1,13 +1,19 @@
 openapi: 3.0.3
 info:
   title: blowball Multi-Agent Backend API
-  version: "1.0.0"
+  version: "1.1.0"
   description: |
     HTTP API surface for the blowball multi-agent backend.
 
     Authentication is JWT Bearer. All routes except `/auth/login` require an
     `Authorization: Bearer <token>` header. Errors follow the unified envelope
     `{"error": {"code": "ERROR_CODE", "message": "..."}}`.
+
+    1.1.0 — turn-detach-resume (disconnecting from an SSE stream no longer
+    cancels the turn; run ids, session-busy 409, cancel/resume-by-run-id
+    endpoints, `generating`/`run_id` on the session list) and
+    per-request-model-selection (`model`/`reasoning_effort` request params,
+    `GET /api/v1/models`).
 
     Workspace file endpoints are transparent to the physical storage backend:
     requests and responses are identical whether `storage.workspace.backend` is
@@ -241,6 +247,7 @@ components:
           type: object
           properties:
             parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
+            run_id: {type: string, description: The owning turn run id; present on every event frame (turn-detach-resume).}
     SSEToken:
       type: object
       required: [type, agent, content]
@@ -252,6 +259,7 @@ components:
           type: object
           properties:
             parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
+            run_id: {type: string, description: The owning turn run id; present on every event frame (turn-detach-resume).}
     SSEReasoning:
       type: object
       required: [type, agent, content]
@@ -263,6 +271,7 @@ components:
           type: object
           properties:
             parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
+            run_id: {type: string, description: The owning turn run id; present on every event frame (turn-detach-resume).}
     SSEToolCall:
       type: object
       required: [type, agent, content]
@@ -277,6 +286,7 @@ components:
             tool_call_id: {type: string, description: Correlates this call with its tool_result event.}
             args: {type: object, additionalProperties: true}
             parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
+            run_id: {type: string, description: The owning turn run id; present on every event frame (turn-detach-resume).}
     SSEToolResult:
       type: object
       required: [type, agent, content]
@@ -299,6 +309,7 @@ components:
           properties:
             tool_call_id: {type: string, description: Matches the meta.tool_call_id of the originating tool_call event.}
             parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
+            run_id: {type: string, description: The owning turn run id; present on every event frame (turn-detach-resume).}
     SSEAgentEnd:
       type: object
       required: [type, agent]
@@ -309,6 +320,7 @@ components:
           type: object
           properties:
             parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
+            run_id: {type: string, description: The owning turn run id; present on every event frame (turn-detach-resume).}
     SSEAgentError:
       type: object
       required: [type, agent, content]
@@ -329,6 +341,7 @@ components:
           properties:
             error_code: {type: string}
             parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
+            run_id: {type: string, description: The owning turn run id; present on every event frame (turn-detach-resume).}
     SSEDone:
       type: object
       required: [type, meta]
@@ -768,8 +781,23 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/SessionListResponse'}
               examples:
-                populated: {value: {sessions: [{session_id: sess_1, title: "Plan release", update_time: "2026-06-11T10:00:00Z"}]}}
-                empty:     {value: {sessions: []}}
+                populated:
+                  value:
+                    sessions:
+                      # A session with a turn still running (turn-detach-resume):
+                      # generating=true carries the active run_id — the
+                      # attach/cancel target and the reload recovery path.
+                      - session_id: sess_1
+                        title: "Plan release"
+                        update_time: "2026-06-11T10:00:00Z"
+                        generating: true
+                        run_id: "018f9b8a-7c1a-7e6a-8e6a-6c1a7c1a7c1a"
+                      # An idle session: generating=false, run_id omitted.
+                      - session_id: sess_2
+                        title: "Notes"
+                        update_time: "2026-06-10T09:00:00Z"
+                        generating: false
+                empty: {value: {sessions: []}}
         '500':
           $ref: '#/components/responses/Internal'
     post:
@@ -924,6 +952,10 @@ paths:
             turn — cancel explicitly via the cancel endpoint.
             Event types: `agent_start`, `token`, `reasoning`, `tool_call`, `tool_result`,
             `agent_end`, `agent_error`, `done`. The `done` event is always the final event.
+          headers:
+            X-Run-Id:
+              description: The run id of this turn (equals the request's trace id) — the cancel/resume target.
+              schema: {type: string}
           content:
             text/event-stream:
               schema:
@@ -1047,6 +1079,10 @@ paths:
             Server-Sent Events stream of the run's events (same frame format
             as POST /messages, including `id:` lines and `X-Run-Id` header).
             The stream ends after the terminal `done` event.
+          headers:
+            X-Run-Id:
+              description: The run id being replayed/tailed.
+              schema: {type: string}
           content:
             text/event-stream:
               schema:

@@ -333,6 +333,8 @@ export interface paths {
                  */
                 200: {
                     headers: {
+                        /** @description The run id of this turn (equals the request's trace id) — the cancel/resume target. */
+                        "X-Run-Id"?: string;
                         [name: string]: unknown;
                     };
                     content: {
@@ -483,6 +485,8 @@ export interface paths {
                  */
                 200: {
                     headers: {
+                        /** @description The run id being replayed/tailed. */
+                        "X-Run-Id"?: string;
                         [name: string]: unknown;
                     };
                     content: {
@@ -1530,6 +1534,8 @@ export interface components {
             meta?: {
                 /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
+                run_id?: string;
             };
         };
         SSEToken: {
@@ -1541,6 +1547,8 @@ export interface components {
             meta?: {
                 /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
+                run_id?: string;
             };
         };
         SSEReasoning: {
@@ -1552,6 +1560,8 @@ export interface components {
             meta?: {
                 /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
+                run_id?: string;
             };
         };
         SSEToolCall: {
@@ -1568,6 +1578,8 @@ export interface components {
                 };
                 /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
+                run_id?: string;
             };
         };
         /**
@@ -1591,6 +1603,8 @@ export interface components {
                 tool_call_id: string;
                 /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
+                run_id?: string;
             };
         };
         SSEAgentEnd: {
@@ -1600,6 +1614,8 @@ export interface components {
             meta?: {
                 /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
+                run_id?: string;
             };
         };
         /**
@@ -1621,6 +1637,8 @@ export interface components {
                 error_code?: string;
                 /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
+                run_id?: string;
             };
         };
         SSEDone: {
