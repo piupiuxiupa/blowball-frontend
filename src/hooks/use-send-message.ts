@@ -1,43 +1,17 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
-import { apiPostStream } from '@/lib/api';
-import { parseSSEStream } from '@/lib/sse';
+import { apiPostStream, ApiRequestError } from '@/lib/api';
+import { consumeTurnStream, reconcileTurnHistory, clearTurnStreamState } from '@/lib/turn-stream';
+import { attachToRun } from '@/hooks/use-turn-lifecycle';
 import { useAuthStore } from '@/stores/auth-store';
 import { useUIStore } from '@/stores/ui-store';
 import type { SendMessageRequest, SessionMessagesResponse, Message } from '@/lib/api';
 
-interface StreamEvent {
-  type: string;
-  agent: string;
-  content?: string;
-  // tool_call：content=工具名，参数在 meta.args（见 openapi SSEToolCall）。
-  // tool_result：content 是工具结果状态信封 JSON 串（{"status":0,"result":...} /
-  // {"status":1,"error":...}），meta.tool_call_id 关联对应 tool_call（见 openapi SSEToolResult）。
-  // parent_tool_call_id：子 agent 调用的 run 身份（父 invoke tool_call id），仅子 agent
-  // 事件携带；并发同名调用靠它区分路由，缺失为空串（顶层事件，退化按 agent 名路由）。
-  meta?: {
-    args?: unknown;
-    tool_call_id?: string;
-    parent_tool_call_id?: string;
-    [key: string]: unknown;
-  };
-}
-
-// 事件所属子 agent 调用的 run 身份；顶层事件返回空串。
-function runIdOf(payload: StreamEvent): string {
-  const id = payload.meta?.parent_tool_call_id;
-  return typeof id === 'string' ? id : '';
-}
-
-// 流缓冲键：agent 与 runId 的复合（agent 名不含空格（Confucius/Chongzhi/Liang/user），
-// 按首个空格拆回即可）。
-function bufferKey(agent: string, runId: string): string {
-  return `${agent} ${runId}`;
-}
-function splitBufferKey(key: string): { agent: string; runId: string } {
-  const i = key.indexOf(' ');
-  return { agent: key.slice(0, i), runId: key.slice(i + 1) };
-}
+// 发送路径：建立流（POST /messages）+ 乐观用户消息 + 收尾 reconcile。
+// 事件消费与缓冲节流在 lib/turn-stream.ts 的共享消费函数中——发送流与 attach 流
+// （use-turn-lifecycle）共用同一实现（后端两路是同一条订阅循环，帧格式一致）。
+// turn 生命周期语义（turn-detach-resume）：断开连接不再取消 turn；停止按钮走
+// cancelTurn（见 use-turn-lifecycle），本地 abort 仅为 detach。
 
 function buildOptimisticUserMessage(sessionId: string, content: string, messages: Message[]): Message {
   const now = new Date().toISOString();
@@ -59,38 +33,8 @@ function buildOptimisticUserMessage(sessionId: string, content: string, messages
 export function useSendMessage() {
   const queryClient = useQueryClient();
   const { token } = useAuthStore();
-  const {
-    startAgentSegment,
-    appendSegmentContent,
-    appendSegmentReasoning,
-    pushSegmentToolCall,
-    setSegmentStatus,
-    clearStreamingSegments,
-  } = useUIStore();
+  const { setTurnRun, clearStreamingSegments } = useUIStore();
   const abortControllerRef = useRef<AbortController | null>(null);
-
-  // 收尾重拉：助手整段回复在流式期间只存在于 streamingSegments，并不在消息缓存里。
-  // `done` 事件可能早于后端把这一轮写库到达——若此时立刻清空流式分段，回复会在
-  // 历史重取完成前消失；重取若因写入延迟返回空/旧数据，整个聊天区会暂时为空，
-  // 直到刷新页面才会恢复。这里反复重拉持久化历史，直到消息数超过发送前快照
-  // （说明这一轮已落库）再清空流式分段；多次仍未增长则兜底清空，避免流式尾巴残留。
-  // reconcile 期间 mutation 仍处于 pending，可阻挡新一轮发送，避免与下一次流式写入竞态。
-  const reconcileHistory = async (sessionId: string) => {
-    const queryKey = ['messages', sessionId];
-    // 此刻消息缓存里还带着 onMutate 写入的乐观用户消息，故 baseline = 发送前条数 + 1。
-    const baseline = queryClient.getQueryData<SessionMessagesResponse>(queryKey)?.messages?.length ?? 0;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      try {
-        await queryClient.refetchQueries({ queryKey });
-      } catch {
-        // 单次重拉失败不致命，下一轮继续尝试。
-      }
-      const after = queryClient.getQueryData<SessionMessagesResponse>(queryKey)?.messages?.length ?? 0;
-      if (after > baseline) break;
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
-    clearStreamingSegments(sessionId);
-  };
 
   const mutation = useMutation({
     mutationFn: async ({
@@ -103,49 +47,7 @@ export function useSendMessage() {
       if (!token) throw new Error('Not authenticated');
 
       abortControllerRef.current = new AbortController();
-
-      // 流式 token 本地缓冲 + rAF 节流：token / reasoning 先累积进缓冲，
-      // 每个动画帧最多 flush 一次到 store，把渲染频率压到 ≤60fps。
-      // 缓冲按 (agent, runId) 复合键分桶：flush 时把每路的串追加到其活动段——
-      // 并行/交错的同名子 agent 调用（runId 不同）不会串段；串行回合下退化为单条目。
-      // 收尾事件（done / agent_error / 异常 / abort）会同步 flush 剩余缓冲，
-      // 避免丢失尾部 token；取消时也确保 rAF 句柄被回收，防止泄漏。
-      let tokenBuffers: Record<string, string> = {};
-      let reasoningBuffers: Record<string, string> = {};
-      let rafId: number | null = null;
-
-      // 回收待执行的 rAF 句柄，避免 abort 后残留回调写入状态。
-      const cancelPendingFlush = () => {
-        if (rafId != null) {
-          cancelAnimationFrame(rafId);
-          rafId = null;
-        }
-      };
-
-      const flush = () => {
-        cancelPendingFlush();
-        // 取出并重置缓冲（闭包绑定，后续 token 写入新对象），再按复合键追加到活动段。
-        const tokens = tokenBuffers;
-        const reasoning = reasoningBuffers;
-        tokenBuffers = {};
-        reasoningBuffers = {};
-        for (const key in tokens) {
-          const { agent, runId } = splitBufferKey(key);
-          if (tokens[key]) appendSegmentContent(sessionId, agent, runId, tokens[key]);
-        }
-        for (const key in reasoning) {
-          const { agent, runId } = splitBufferKey(key);
-          if (reasoning[key]) appendSegmentReasoning(sessionId, agent, runId, reasoning[key]);
-        }
-      };
-
-      const scheduleFlush = () => {
-        if (rafId != null) return;
-        rafId = requestAnimationFrame(() => {
-          rafId = null;
-          flush();
-        });
-      };
+      const signal = abortControllerRef.current.signal;
 
       try {
         const response = await apiPostStream(
@@ -153,96 +55,30 @@ export function useSendMessage() {
           {
             body: { content } as SendMessageRequest,
             token,
-            signal: abortControllerRef.current.signal,
+            signal,
           }
         );
 
-        for await (const sseEvent of parseSSEStream(response)) {
-          let payload: StreamEvent;
-          try {
-            payload = JSON.parse(sseEvent.data) as StreamEvent;
-          } catch {
-            continue;
-          }
+        // 记录本 turn 的 run id（= trace id）：取消目标 / 输入禁用判据 / attach 防重
+        // 都读它。X-Run-Id 响应头是主渠道（跨域未暴露该头时由消费循环从首个事件的
+        // meta.run_id 兜底补记，见 turn-stream.ts）。
+        const headerRunId = response.headers.get('X-Run-Id');
+        if (headerRunId) setTurnRun(sessionId, headerRunId);
 
-          switch (payload.type) {
-            case 'agent_start':
-              // push 新段、置 running。活动段即数组末尾。子 agent 调用带 runId 各自成段。
-              startAgentSegment(sessionId, payload.agent, runIdOf(payload));
-              break;
-            case 'token': {
-              // 按 (agent, runId) 累积进缓冲，下一帧 flush 时追加到对应活动段。
-              // 若 token 先于 agent_start 到达，appendSegmentContent 会按复合键惰性建段。
-              const key = bufferKey(payload.agent, runIdOf(payload));
-              if (payload.content) {
-                tokenBuffers[key] = (tokenBuffers[key] ?? '') + payload.content;
-                scheduleFlush();
-              }
-              break;
-            }
-            case 'reasoning': {
-              const key = bufferKey(payload.agent, runIdOf(payload));
-              if (payload.content) {
-                reasoningBuffers[key] = (reasoningBuffers[key] ?? '') + payload.content;
-                scheduleFlush();
-              }
-              break;
-            }
-            case 'tool_call': {
-              // SSE 的 tool_call：content=工具名、参数在 meta.args。组装成与持久化一致的
-              // {"tool_call_id","name","args"} JSON（后端 event_mapper.go 同此格式），否则
-              // parseToolCall 拿不到参数，表现为流式期间「无参数」。
-              const meta = payload.meta ?? {};
-              const record = JSON.stringify({
-                tool_call_id: typeof meta.tool_call_id === 'string' ? meta.tool_call_id : '',
-                name: payload.content ?? '',
-                args: meta.args ?? {},
-              });
-              pushSegmentToolCall(sessionId, payload.agent, runIdOf(payload), record);
-              break;
-            }
-            case 'tool_result': {
-              // SSE 的 tool_result（见 openapi SSEToolResult）：content 即工具结果的状态信封
-              // JSON 串——registry 工具为 {"status":0,"result":...} / {"status":1,"error":...}，
-              // invoke_* 子 agent 分发为子 agent 输出原文。直接并入活动段 toolCalls，由
-              // ToolCallBubble.parseToolCall 识别为「工具结果」，并在 status===1 时整卡标红。
-              pushSegmentToolCall(sessionId, payload.agent, runIdOf(payload), payload.content ?? '');
-              break;
-            }
-            case 'agent_end':
-              // 先 flush 该路的待落缓冲，再按复合键置 idle——否则置 idle 后待 flush 的
-              // token 会因找不到活动段而被惰性建段，产生重复的孤立 running 段。
-              flush();
-              setSegmentStatus(sessionId, payload.agent, runIdOf(payload), 'idle');
-              break;
-            case 'agent_error':
-              // 出错时先同步 flush，确保已收到的尾部 token 不丢失、不截断，再置段 error。
-              flush();
-              setSegmentStatus(sessionId, payload.agent, runIdOf(payload), 'error');
-              break;
-            case 'done':
-              // 仅同步 flush 剩余缓冲；流式分段的清空交给流结束后的 reconcileHistory，
-              // 由它确认这一轮已落库后再清，避免回复在历史重取前消失。
-              flush();
-              break;
-          }
-        }
+        // 消费到流关闭（后端在终局事件后关流；显式取消也经此路径收尾——取消后
+        // 部分输出会持久化，收尾走 reconcile 而非丢弃）。
+        await consumeTurnStream(sessionId, response, signal);
+
+        // 流正常结束后收尾：重拉确认落库再清空流式分段（见 reconcileTurnHistory 注释）。
+        // 注意：detach 路径会抛出 AbortError，跳过此处，流式状态保留给后续 attach。
+        await reconcileTurnHistory(sessionId);
       } finally {
-        // abort 路径：abort() 已清空分段，这里仅回收 rAF 句柄、丢弃缓冲——
-        // 若仍 flush，缓冲里的尾部 token 会被惰性建成孤立 running 段，短暂闪现已取消的内容。
-        // 正常结束 / 出错：同步 flush 剩余缓冲，避免丢失尾部 token。
-        const aborted = abortControllerRef.current?.signal.aborted ?? false;
-        if (aborted) {
-          cancelPendingFlush();
-        } else {
-          flush();
-        }
+        // 请求级失败（409/网络等）或正常终局后清除本端 turn 登记；409 的转 attach
+        // 在 onError 里做（需先经 onError 回滚乐观消息），时序在本 finally 之后。
+        setTurnRun(sessionId, null);
+        clearTurnStreamState(sessionId);
         abortControllerRef.current = null;
       }
-
-      // 流正常结束后收尾：重拉确认落库再清空流式分段（见 reconcileHistory 注释）。
-      // 注意：abort 路径会抛出 AbortError，跳过此处，流式状态由 abort() 自行清理。
-      await reconcileHistory(sessionId);
     },
     onMutate: async ({ sessionId, content }) => {
       const queryKey = ['messages', sessionId];
@@ -255,12 +91,17 @@ export function useSendMessage() {
       });
       return { previous };
     },
-    onError: (_err, { sessionId }, context) => {
+    onError: (err, { sessionId }, context) => {
       // 请求级失败（网络/鉴权等，非单 agent 的 agent_error 事件）：回滚乐观消息，
       // 并清空可能残留的孤立流式分段——本轮无有效回合，不应留下半截 agent 输出。
       clearStreamingSegments(sessionId);
       if (context?.previous) {
         queryClient.setQueryData(['messages', sessionId], context.previous);
+      }
+      // 409 撞忙：消息未被后端接受，但 body 携带运行中 turn 的 run id——静默转
+      // attach 接入该 turn（此处乐观消息已回滚，与本轮发送无交集）。
+      if (err instanceof ApiRequestError && err.code === 'SESSION_BUSY' && err.runId) {
+        void attachToRun(sessionId, err.runId);
       }
     },
     onSettled: (_, __, { sessionId }) => {
@@ -269,10 +110,11 @@ export function useSendMessage() {
     },
   });
 
-  const abort = (sessionId: string) => {
+  // 仅 detach：断开本端订阅（turn 在服务端继续跑完，断开不再取消——turn-detach-resume
+  // 契约）。不清流式分段、不回滚乐观消息；语义上供组件清理/会话删除等路径使用，
+  // 停止按钮走 cancelTurn（use-turn-lifecycle）而非这里。
+  const abort = () => {
     abortControllerRef.current?.abort();
-    // 取消本轮：丢弃本地流式分段（回合已中止，部分输出不保留），与既有 abort 语义一致。
-    clearStreamingSegments(sessionId);
   };
 
   return { ...mutation, abort };

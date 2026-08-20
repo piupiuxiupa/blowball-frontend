@@ -24,6 +24,10 @@ export function useSessions() {
   const sessionsQuery = useQuery({
     queryKey: ['sessions'],
     queryFn: () => apiGet<SessionListResponse>('/api/v1/sessions'),
+    // 单独开启聚焦重取（覆盖全局默认 false）：全局关闭是为保护 Monaco 未保存编辑
+    // （见 query-client.ts 注释），而会话列表不碰文件内容。这也是 detach 后回到页面
+    // 感知 turn 结束（generating 徽标消失）的主通道（turn-detach-resume）。
+    refetchOnWindowFocus: true,
   });
 
   const createMutation = useMutation({

@@ -16,16 +16,22 @@ export type ApiError = {
   error: {
     code: string;
     message: string;
+    // 409 SESSION_BUSY 专属：当前运行中 turn 的 run id（attach 目标，见 openapi）。
+    run_id?: string;
   };
 };
 
 export class ApiRequestError extends Error {
   code: string;
+  // 409 SESSION_BUSY 时携带 body 中的 run_id，供调用方静默转 attach；
+  // 其余错误路径缺省。
+  runId?: string;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, runId?: string) {
     super(message);
     this.name = 'ApiRequestError';
     this.code = code;
+    this.runId = runId;
   }
 }
 
@@ -219,6 +225,63 @@ export async function apiPostStream(
     }
     const code = errorBody?.error?.code ?? `HTTP_${response.status}`;
     const message = errorBody?.error?.message ?? response.statusText;
+    // 409 SESSION_BUSY 的 body 携带运行中 run id——丢掉它调用方就只能报错，
+    // 无法转 attach（turn-detach-resume 契约）。
+    const runId = errorBody?.error?.run_id;
+    throw new ApiRequestError(code, message, typeof runId === 'string' ? runId : undefined);
+  }
+
+  return response;
+}
+
+// 非流式 POST 走 agent base：turn 生命周期端点（如 cancel）由 agent 角色服务
+// （service-roles 分区），走 apiPost 的 API base 在分体部署下会 404。单体部署
+// 两 base 相同，行为与 apiPost 一致。
+export async function apiPostAgent<T>(
+  path: string,
+  options: { body?: unknown; token?: string | null } = {}
+): Promise<T> {
+  const token = options.token ?? getToken();
+  const response = await fetch(getAgentBase() + path, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+
+  return handleResponse<T>(response);
+}
+
+// SSE GET 走 agent base：attach 运行中 turn 的事件流（GET /turns/:run_id/events，
+// turn-detach-resume）。与 POST 流同帧格式（id:/event:/data:）；lastEventId 以
+// Last-Event-ID 请求头下发，实现事件粒度续传（后端保证无重放/追 live 缝隙）。
+export async function apiGetStream(
+  path: string,
+  options: { lastEventId?: string | null; token?: string | null; signal?: AbortSignal } = {}
+): Promise<Response> {
+  const token = options.token ?? getToken();
+  const response = await fetch(getAgentBase() + path, {
+    method: 'GET',
+    headers: {
+      Accept: 'text/event-stream',
+      ...(options.lastEventId ? { 'Last-Event-ID': options.lastEventId } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    signal: options.signal,
+  });
+
+  if (!response.ok) {
+    let errorBody: ApiError | null = null;
+    try {
+      errorBody = (await response.clone().json()) as ApiError;
+    } catch {
+      // ignore
+    }
+    const code = errorBody?.error?.code ?? `HTTP_${response.status}`;
+    const message = errorBody?.error?.message ?? response.statusText;
     throw new ApiRequestError(code, message);
   }
 
@@ -251,6 +314,13 @@ export async function apiUpload<T>(
 export type LoginRequest = paths['/api/v1/auth/login']['post']['requestBody']['content']['application/json'];
 export type LoginResponse = paths['/api/v1/auth/login']['post']['responses']['200']['content']['application/json'];
 export type SessionListResponse = paths['/api/v1/sessions']['get']['responses']['200']['content']['application/json'];
+// 会话列表项含 generating/run_id（turn-detach-resume：运行中标记与 attach/cancel 目标，
+// run_id 仅 generating 为 true 时出现）。
+export type SessionListEntry = NonNullable<SessionListResponse['sessions']>[number];
+// POST /turns/:run_id/cancel 的响应：{run_id, status}，status 含 cancelling（已接受）
+// 与幂等取消已终局 run 时上报的终态。
+export type TurnStatusResponse =
+  paths['/api/v1/sessions/{session_id}/turns/{run_id}/cancel']['post']['responses']['200']['content']['application/json'];
 export type CreateSessionResponse = paths['/api/v1/sessions']['post']['responses']['200']['content']['application/json'];
 export type SessionMessagesResponse =
   paths['/api/v1/sessions/{session_id}/messages']['get']['responses']['200']['content']['application/json'];

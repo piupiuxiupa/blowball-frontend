@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { MessageSquare, Trash2, Pencil, Loader2 } from 'lucide-react';
+import { MessageSquare, Trash2, Pencil, Loader2, Square } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useDeleteSession, useUpdateSession } from '@/hooks/use-sessions';
+import { cancelTurn } from '@/hooks/use-turn-lifecycle';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
@@ -10,6 +11,9 @@ interface SessionItemProps {
     session_id: string;
     title: string;
     update_time?: string;
+    // turn-detach-resume：运行中标记与 attach/cancel 目标（run_id 仅 generating 时携带）。
+    generating?: boolean;
+    run_id?: string;
   };
   isActive: boolean;
   onClick: () => void;
@@ -31,6 +35,14 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
       inputRef.current.select();
     }
   }, [isEditing]);
+
+  // 从列表取消未打开会话的运行中 turn：无需 attach，fire-and-forget 取消，
+  // 徽标随列表重取（聚焦重取/失效）消失。幂等端点，重复点击无副作用。
+  const handleCancelGenerating = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!session.run_id) return;
+    void cancelTurn(session.session_id, session.run_id);
+  };
 
   const handleDelete = async (e: React.MouseEvent) => {
     // Stop propagation so the click doesn't also select the session.
@@ -79,7 +91,9 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
         onClick={onClick}
         disabled={isDeleting || isEditing}
         className={cn(
-          'flex flex-1 items-center gap-2 rounded-xl px-2.5 py-2 pr-14 text-left text-sm transition-all',
+          'flex flex-1 items-center gap-2 rounded-xl px-2.5 py-2 text-left text-sm transition-all',
+          // 生成中多一个取消按钮的空间（pr-20），否则悬停按钮会互相叠压。
+          session.generating ? 'pr-20' : 'pr-14',
           isActive
             ? 'bg-accent text-accent-foreground shadow-[inset_0_0_0_1px_rgba(255,159,10,0.35)]'
             : 'hover:bg-foreground/[0.05]',
@@ -100,7 +114,16 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
             />
           ) : (
             <>
-              <div className="truncate font-medium">{label}</div>
+              <div className="flex items-center gap-1.5">
+                <span className="truncate font-medium">{label}</span>
+                {session.generating && (
+                  // 生成中徽标：后端仍有运行中 turn（断开连接不会取消它）。
+                  <span
+                    className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
+                    title="正在生成"
+                  />
+                )}
+              </div>
               {session.update_time && (
                 <div className="truncate text-xs text-muted-foreground">
                   {new Date(session.update_time).toLocaleString()}
@@ -113,6 +136,20 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
 
       {!isEditing && (
         <>
+          {session.generating && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute right-16 top-1/2 h-6 w-6 -translate-y-1/2 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
+              onClick={handleCancelGenerating}
+              disabled={isDeleting || !session.run_id}
+              title="取消生成"
+              aria-label={`取消会话 ${label} 的生成`}
+            >
+              <Square className="h-3 w-3 fill-current" />
+            </Button>
+          )}
+
           <Button
             variant="ghost"
             size="icon"

@@ -1,12 +1,16 @@
 import { Wrench, Sparkles } from 'lucide-react';
 import { useUIStore } from '@/stores/ui-store';
 import { useMcpTools, useSkills } from '@/hooks/use-catalogue';
+import { useAttachRun } from '@/hooks/use-turn-lifecycle';
 import { MessageList } from '@/components/chat/message-list';
 import { MessageInput } from '@/components/chat/message-input';
 import { CatalogueButton } from '@/components/chat/catalogue-button';
 
 export function ChatPanel() {
   const activeSessionId = useUIStore((s) => s.activeSessionId);
+  // 打开 generating 会话时自动 attach 运行中 turn（turn-detach-resume：reload 后的
+  // run id 发现路径是会话列表项）。挂在聊天面板——它随活动会话驱动整个消息区。
+  useAttachRun();
   // Tool/skill catalogues are global (not per-session), so they're available
   // to browse from the panel header even before a session is selected.
   const toolsQuery = useMcpTools();

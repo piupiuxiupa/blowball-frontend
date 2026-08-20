@@ -37,6 +37,11 @@ interface UIState {
   sidebarCollapsed: boolean;
   showHiddenFiles: boolean;
   streamingSegments: Record<string, StreamingSegment[]>;
+  // 每会话活跃 turn 的 run id（turn-detach-resume）：发送时从 X-Run-Id 头记录、
+  // 409/attach 时从 body 或列表项获得。存在即「本端正订阅该 turn」——停止按钮的
+  // 取消目标、输入禁用判据、attach 防重都读它；终局/回落时置 null。
+  // 最后收到的帧 id（续传用）刻意不放这里，见 lib/turn-stream.ts 的 lastEventIds。
+  turnRuns: Record<string, string>;
 
   setActiveSession: (id: string | null) => void;
   setActiveFile: (path: string | null) => void;
@@ -45,6 +50,7 @@ interface UIState {
   setPreviewVersion: (id: string | null) => void;
   toggleSidebar: () => void;
   toggleShowHiddenFiles: () => void;
+  setTurnRun: (sessionId: string, runId: string | null) => void;
   startAgentSegment: (sessionId: string, agent: string, runId?: string) => void;
   appendSegmentContent: (sessionId: string, agent: string, runId: string, chunk: string) => void;
   appendSegmentReasoning: (sessionId: string, agent: string, runId: string, chunk: string) => void;
@@ -95,6 +101,7 @@ export const useUIStore = create<UIState>((set) => ({
   // 文件树头部用眼睛按钮切换显示。过滤在各层级生效（含已展开子目录）。
   showHiddenFiles: false,
   streamingSegments: {},
+  turnRuns: {},
 
   setActiveSession: (id) => set({ activeSessionId: id }),
   // 切换活动文件时一并退出版本预览（预览绑定的是旧文件的历史版本）。
@@ -104,6 +111,18 @@ export const useUIStore = create<UIState>((set) => ({
   setPreviewVersion: (id) => set({ previewVersionId: id }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   toggleShowHiddenFiles: () => set((state) => ({ showHiddenFiles: !state.showHiddenFiles })),
+
+  // turn 订阅登记：runId 非空登记（取消目标/禁用判据/attach 防重），null 清除（终局/回落）。
+  setTurnRun: (sessionId, runId) =>
+    set((state) => {
+      if (!runId) {
+        if (!state.turnRuns[sessionId]) return {};
+        const next = { ...state.turnRuns };
+        delete next[sessionId];
+        return { turnRuns: next };
+      }
+      return { turnRuns: { ...state.turnRuns, [sessionId]: runId } };
+    }),
 
   // agent_start：push 新段、分配单调 id、置 running。活动段即数组末尾。
   // 若该 (agent, runId) 已有活动段（如 token 先于 agent_start 惰性建段），复用它而非再
