@@ -1,5 +1,5 @@
 import { Wrench, Sparkles } from 'lucide-react';
-import { useUIStore } from '@/stores/ui-store';
+import { DRAFT_SESSION_ID, useUIStore } from '@/stores/ui-store';
 import { useMcpTools, useSkills } from '@/hooks/use-catalogue';
 import { useAttachRun } from '@/hooks/use-turn-lifecycle';
 import { MessageList } from '@/components/chat/message-list';
@@ -80,7 +80,14 @@ export function ChatPanel() {
       </div>
 
       <div className="flex-1 min-h-0 overflow-hidden">
-        {activeSessionId ? (
+        {/* 草稿态（lazy-session-creation）：未落库、永远没有消息——直接渲染空态文案，
+            不挂 MessageList（历史查询本就按哨兵排除）；首条消息发出后活动会话已切到
+            真实 id，自然过渡到列表渲染。 */}
+        {activeSessionId === DRAFT_SESSION_ID ? (
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            开始新的对话
+          </div>
+        ) : activeSessionId ? (
           <MessageList />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">

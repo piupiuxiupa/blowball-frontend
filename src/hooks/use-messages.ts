@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '@/lib/api';
 import type { SessionMessagesResponse } from '@/lib/api';
+import { DRAFT_SESSION_ID } from '@/stores/ui-store';
 
 const DEFAULT_PAGE_SIZE = 100;
 
@@ -32,6 +33,8 @@ export function useMessages(sessionId: string | null) {
 
       return { messages: allMessages } as SessionMessagesResponse;
     },
-    enabled: !!sessionId,
+    // 排除草稿哨兵:draft 未落库,GET /sessions/draft/messages 只会 404;
+    // 草稿态消息区由 ChatPanel 渲染空态,不走此查询。
+    enabled: !!sessionId && sessionId !== DRAFT_SESSION_ID,
   });
 }

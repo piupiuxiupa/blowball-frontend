@@ -42,7 +42,10 @@ export function useSessions() {
     sessions: sessionsQuery.data?.sessions ?? [],
     isLoading: sessionsQuery.isLoading,
     error: sessionsQuery.error,
-    createSession: createMutation.mutateAsync,
+    // 懒创建：真实创建只由「草稿会话首条消息」的 create-first 编排调用
+    // （message-input），「+」按钮不再触发。mutateAsync resolve 时 onSuccess 已
+    // 把活动会话切到新 id，调用方随即以该 id 发送。
+    createSessionAsync: createMutation.mutateAsync,
     isCreating: createMutation.isPending,
   };
 }

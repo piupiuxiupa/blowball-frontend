@@ -3,6 +3,13 @@ import type { ReasoningEffort } from '@/lib/api';
 
 export type AgentStatus = 'idle' | 'running' | 'tool_call' | 'error';
 
+// 草稿会话哨兵（lazy-session-creation）：activeSessionId === DRAFT_SESSION_ID 表示
+// 「新建但未落库」的会话——点「+」仅本地建立,首条消息发送时才真实创建。
+// 不变量:哨兵只存在于 activeSessionId,绝不进任何 API 路径,也不进
+// turnRuns / streamingSegments / ['messages', ...] 的键空间(发送前必已替换为
+// 真实 id)。唯一需要显式排除的是读取侧:use-messages 的 enabled。
+export const DRAFT_SESSION_ID = 'draft';
+
 // 流式按 (agent, runId) 分段：每个 agent_start 开启一段，token/reasoning/tool_call 追加到对应段，
 // 使流式期间即按 agent 分隔展示，不再等回合结束才切分。段仅追加、不重排。
 // runId 取自事件的 meta.parent_tool_call_id（子 agent 调用的 tool_call id）——并发同名
