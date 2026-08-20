@@ -24,14 +24,42 @@ type ListItem =
   | { kind: 'block'; block: MessageBlock }
   | { kind: 'streaming'; segment: StreamingSegment };
 
+// 行的 run 身份（子 agent 调用的父 tool_call id）；NULL/缺失归一为空串（顶层回合）。
+function messageRunId(msg: Message): string {
+  return typeof msg.run_id === 'string' ? msg.run_id : '';
+}
+
+// 复合分段键：并发同名子 agent 调用（同 agent、不同 run_id）各自成块，交错行按归属
+// 路由，不再拼进同一段。agent 名不含空格，按首个空格拼接/拆分即无歧义。
+function blockKey(agent: string, runId: string): string {
+  return `${agent} ${runId}`;
+}
+
 function groupMessages(messages: Message[]): MessageBlock[] {
   const blocks: MessageBlock[] = [];
-  let current: MessageBlock | null = null;
+  // 打开中的块按 (agent, run_id) 复合键索引：交错到达的多个 run 同时各挂一块，
+  // agent_end 只关闭自己那个 run 的块；块在打开时即占位（展示顺序 = 开块顺序，
+  // 与流式分段的追加顺序一致）。
+  const open = new Map<string, MessageBlock>();
+
+  const openBlock = (msg: Message): MessageBlock => {
+    const block: MessageBlock = {
+      id: `agent-${msg.id}`,
+      agent: msg.agent,
+      role: 'assistant',
+      content: '',
+      toolCalls: [],
+    };
+    blocks.push(block);
+    open.set(blockKey(msg.agent, messageRunId(msg)), block);
+    return block;
+  };
+  const blockFor = (msg: Message): MessageBlock | undefined =>
+    open.get(blockKey(msg.agent, messageRunId(msg)));
 
   for (const msg of messages) {
     if (msg.role === 'user') {
-      if (current) blocks.push(current);
-      current = null;
+      open.clear();
       blocks.push({
         id: `user-${msg.id}`,
         agent: 'user',
@@ -43,30 +71,25 @@ function groupMessages(messages: Message[]): MessageBlock[] {
     }
 
     if (msg.event_type === 'agent_start') {
-      if (current) blocks.push(current);
-      current = {
-        id: `agent-${msg.id}`,
-        agent: msg.agent,
-        role: 'assistant',
-        content: '',
-        toolCalls: [],
-      };
+      // 该 (agent, run_id) 已有开块（如 token 先于 agent_start 惰性建块）则复用。
+      if (!blockFor(msg)) openBlock(msg);
       continue;
     }
 
     if (msg.event_type === 'agent_end') {
-      if (current) blocks.push(current);
-      current = null;
+      // 只结束自己这个 run 的块；并发的其他 run 继续累积。
+      open.delete(blockKey(msg.agent, messageRunId(msg)));
       continue;
     }
 
     if (msg.event_type === 'agent_error') {
+      const current = blockFor(msg);
       if (current) {
         current.isError = true;
         current.content += `\n\n[错误] ${msg.content}`;
         // 不关闭块：对齐流式 setSegmentStatus（仅置 error，不结束段）。工具失败时后端
-        // 会紧跟一条 tool_result（见 openapi SSEToolResult），若此处 push 并置 null，
-        // 该 tool_result 会因无 current 挂载而丢失，历史里就看不到标红的工具结果气泡。
+        // 会紧跟一条 tool_result（见 openapi SSEToolResult），若此处关闭块，
+        // 该 tool_result 会因无块挂载而丢失，历史里就看不到标红的工具结果气泡。
         // 块由后续 agent_end / agent_start / user 消息正常收尾。
       } else {
         blocks.push({
@@ -85,6 +108,7 @@ function groupMessages(messages: Message[]): MessageBlock[] {
     // （{tool_call_id,output:{result,status}}）。两者都作为独立气泡并入 toolCalls，
     // 由 ToolCallBubble.parseToolCall 区分形态，结果型在 output.status===1 时整卡标红。
     if (msg.event_type === 'tool_call' || msg.event_type === 'tool_result') {
+      const current = blockFor(msg);
       if (current) {
         current.toolCalls.push(msg.content);
       }
@@ -92,34 +116,16 @@ function groupMessages(messages: Message[]): MessageBlock[] {
     }
 
     if (msg.event_type === 'token') {
-      if (!current) {
-        current = {
-          id: `agent-${msg.id}`,
-          agent: msg.agent,
-          role: 'assistant',
-          content: '',
-          toolCalls: [],
-        };
-      }
-      current.content += msg.content;
+      (blockFor(msg) ?? openBlock(msg)).content += msg.content;
       continue;
     }
 
     if (msg.event_type === 'reasoning') {
-      if (!current) {
-        current = {
-          id: `agent-${msg.id}`,
-          agent: msg.agent,
-          role: 'assistant',
-          content: '',
-          toolCalls: [],
-        };
-      }
+      const current = blockFor(msg) ?? openBlock(msg);
       current.reasoning = (current.reasoning ?? '') + msg.content;
     }
   }
 
-  if (current) blocks.push(current);
   return blocks;
 }
 

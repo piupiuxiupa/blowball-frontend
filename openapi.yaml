@@ -73,7 +73,7 @@ components:
           example: Bearer
     SessionListEntry:
       type: object
-      required: [session_id, title, update_time]
+      required: [session_id, title, update_time, generating]
       properties:
         session_id:
           type: string
@@ -83,6 +83,20 @@ components:
           type: string
           format: date-time
           description: RFC3339 timestamp of the last update.
+        generating:
+          type: boolean
+          description: |
+            Whether a turn is currently running for this session
+            (turn-detach-resume). True while the session's active-run claim
+            exists; clients use it to offer resume (attach to
+            `turns/{run_id}/events`) and a cancel affordance.
+        run_id:
+          type: string
+          description: |
+            The active turn's run id — the attach/cancel target. Present only
+            while `generating` is true. This is the reload discovery path: a
+            reloaded page has lost the `X-Run-Id` header and event meta it
+            saw when the turn started, so it recovers the run id from here.
     SessionListResponse:
       type: object
       required: [sessions]
@@ -129,6 +143,28 @@ components:
         trace_id:
           type: string
           format: uuid
+        client_msg_id:
+          type: string
+          nullable: true
+          description: >
+            Idempotency key minted at persistence time. Backs the Redis-first
+            write-behind delivery: duplicate insert attempts of the same
+            logical message collapse to one row. Rows carry either a
+            deterministic "{trace_id}:{msg_index}" key (the mid-turn-compaction
+            flush path, migration 013) or a UUID v7 (legacy write-behind
+            minting). Null on rows written before migration 012.
+        run_id:
+          type: string
+          nullable: true
+          description: >
+            Sub-agent invocation run identity (subagent-run-identity
+            capability): the id of the parent invoke_* tool_call that spawned
+            the producing Run. Present only on rows emitted by a sub-agent
+            (Chongzhi/Liang); Confucius top-level rows and user rows omit it,
+            and rows written before migration 014 are null. Rows stay in
+            arrival order (msg_time, msg_index) — consumers regroup
+            interleaved same-agent rows by (agent, run_id) to recover each
+            invocation's coherent output.
         update_time:
           type: string
           format: date-time
@@ -151,13 +187,60 @@ components:
           type: string
           minLength: 1
           description: User message text (must be non-empty).
+        model:
+          type: string
+          description: |
+            Selects the turn's model from the `openai.models` catalog
+            (per-request-model-selection). The selection applies uniformly to
+            all three agents (same model, same thinking mode); per-agent
+            `agents.<name>.model` configs keep driving turns that omit the
+            parameter. When `model` is set, the turn's thinking configuration
+            is fully derived from the catalog entry and `reasoning_effort`
+            (agent-level thinking/effort config does not participate that
+            turn). Unknown names — and any value when no catalog is
+            configured — return 400 `INVALID_MODEL`.
+        reasoning_effort:
+          type: string
+          enum: [none, low, medium, high, xhigh, max]
+          description: |
+            Selects the turn's thinking level. `none` turns thinking off (no
+            `reasoning_effort` sent to the provider). A non-`none` value
+            requires a catalog entry with `thinking: true`; `model` omitted
+            resolves against the default entry. Invalid values, values on a
+            non-thinking model, and any value when no catalog is configured
+            return 400 `INVALID_EFFORT`. When only `model` is sent the effort
+            derives from the entry (thinking → `medium`, non-thinking →
+            `none`).
+    TurnStatusResponse:
+      type: object
+      required: [run_id, status]
+      properties:
+        run_id:
+          type: string
+        status:
+          type: string
+          enum: [cancelling, running, done, error, cancelled, interrupted]
+          description: |
+            `cancelling` — accepted; the owning process will finalize the run
+            (persisting partial output). The remaining values are terminal
+            states reported by idempotent cancels of finished runs.
     # ---- SSE event payloads -------------------------------------------------
+    # Every sub-agent-produced event additionally carries the optional
+    # meta.parent_tool_call_id (subagent-run-identity capability): the id of
+    # the parent invoke_* tool_call that spawned the emitting Run. It lets
+    # consumers attribute interleaved parallel same-name invocations; events
+    # from the top-level agent (Confucius) and user rows never carry it, and
+    # older frontends simply ignore the unknown key.
     SSEAgentStart:
       type: object
       required: [type, agent]
       properties:
         type: {type: string, enum: [agent_start]}
         agent: {type: string}
+        meta:
+          type: object
+          properties:
+            parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
     SSEToken:
       type: object
       required: [type, agent, content]
@@ -165,6 +248,10 @@ components:
         type: {type: string, enum: [token]}
         agent: {type: string}
         content: {type: string, description: Incremental text token.}
+        meta:
+          type: object
+          properties:
+            parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
     SSEReasoning:
       type: object
       required: [type, agent, content]
@@ -172,6 +259,10 @@ components:
         type: {type: string, enum: [reasoning]}
         agent: {type: string}
         content: {type: string, description: Incremental reasoning/thinking token.}
+        meta:
+          type: object
+          properties:
+            parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
     SSEToolCall:
       type: object
       required: [type, agent, content]
@@ -185,6 +276,7 @@ components:
           properties:
             tool_call_id: {type: string, description: Correlates this call with its tool_result event.}
             args: {type: object, additionalProperties: true}
+            parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
     SSEToolResult:
       type: object
       required: [type, agent, content]
@@ -206,12 +298,17 @@ components:
           required: [tool_call_id]
           properties:
             tool_call_id: {type: string, description: Matches the meta.tool_call_id of the originating tool_call event.}
+            parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
     SSEAgentEnd:
       type: object
       required: [type, agent]
       properties:
         type: {type: string, enum: [agent_end]}
         agent: {type: string}
+        meta:
+          type: object
+          properties:
+            parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
     SSEAgentError:
       type: object
       required: [type, agent, content]
@@ -231,6 +328,7 @@ components:
           type: object
           properties:
             error_code: {type: string}
+            parent_tool_call_id: {type: string, description: Present only on sub-agent events; the parent invoke_* tool_call id (run identity).}
     SSEDone:
       type: object
       required: [type, meta]
@@ -444,6 +542,40 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SkillEntry'
+    ModelsResponse:
+      type: object
+      required: [models, default]
+      description: |
+        The selectable model catalog (per-request-model-selection). `thinking`
+        tells clients whether `reasoning_effort` values other than `none` are
+        valid for the model. The same response shape is returned with and
+        without a configured `openai.models` catalog (the latter synthesizes
+        one entry from the legacy `openai.model`/`openai.max_context_tokens`).
+        Each turn's resolved model is recorded in run meta
+        (`GET .../turns/{run_id}/events` payloads) and the `turn_usage` table's
+        `model` column (NULL on pre-migration rows) for per-model cost
+        aggregation.
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelEntry'
+        default:
+          type: string
+          description: The default model name (openai.default_model, first entry, or openai.model).
+    ModelEntry:
+      type: object
+      required: [name, max_context_tokens, thinking]
+      properties:
+        name:
+          type: string
+          description: Model name — the value a request's `model` parameter accepts.
+        max_context_tokens:
+          type: integer
+          description: The model's context window; the context-compaction threshold for turns selecting it (0.8 × this value).
+        thinking:
+          type: boolean
+          description: Whether the model supports reasoning (gates non-`none` reasoning_effort values).
     OnlyOfficeConfigResponse:
       type: object
       required: [server_url, edit, view]
@@ -780,8 +912,16 @@ paths:
       responses:
         '200':
           description: |
-            Server-Sent Events stream. Each event is two lines:
-            `event: <type>` and `data: <json>` followed by a blank line.
+            Server-Sent Events stream. Each event frame is `id: <cursor>`,
+            `event: <type>`, and `data: <json>` followed by a blank line
+            (turn-detach-resume: the `id` line carries the run event log's
+            stream entry id; native EventSource clients replay it as
+            `Last-Event-ID` when resuming via
+            `GET /api/v1/sessions/{session_id}/turns/{run_id}/events`).
+            The response carries an `X-Run-Id` header (the run id, equal to
+            the request's trace id); every event's `meta.run_id` carries the
+            same value. Disconnecting from this stream does NOT cancel the
+            turn — cancel explicitly via the cancel endpoint.
             Event types: `agent_start`, `token`, `reasoning`, `tool_call`, `tool_result`,
             `agent_end`, `agent_error`, `done`. The `done` event is always the final event.
           content:
@@ -797,11 +937,130 @@ paths:
                   - $ref: '#/components/schemas/SSEAgentError'
                   - $ref: '#/components/schemas/SSEDone'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: |
+            Malformed body, or a rejected per-request model selection
+            (per-request-model-selection): `INVALID_MODEL` (unknown catalog
+            name, or any `model`/`reasoning_effort` value while no
+            `openai.models` catalog is configured) or `INVALID_EFFORT`
+            (invalid effort value, non-`none` effort on a `thinking: false`
+            model, effort conflicting with a configured agent
+            `output_schema`, or any value without a catalog).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            The session already has a running turn (single active run per
+            session). The error object carries the active `run_id` so the
+            client can attach to the running turn instead of retrying.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error:
+                    type: object
+                    required: [code, message, run_id]
+                    properties:
+                      code:
+                        type: string
+                        enum: [SESSION_BUSY]
+                      message:
+                        type: string
+                      run_id:
+                        type: string
+                        description: The currently running turn's run id (attach target).
+        '500':
+          $ref: '#/components/responses/Internal'
+  /api/v1/sessions/{session_id}/turns/{run_id}/cancel:
+    post:
+      tags: [Session]
+      summary: Cancel a running turn by run id (turn-detach-resume).
+      description: |
+        Cancels the turn identified by `run_id` and releases its resources.
+        Three outcomes: the run is in THIS agent process (cancelled
+        immediately, partial output persists through the interrupted-turn
+        path), the run heartbeats on another replica (a Redis cancel flag is
+        raised; the owning process cancels within one heartbeat period), or
+        the run is dead (crashed process — force-cleared to `interrupted`,
+        session unlocked). Cancelling an already-terminal run is idempotent
+        and reports the terminal status. The run must belong to the caller
+        and the path session, otherwise 404.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Cancellation accepted (or already terminal).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TurnStatusResponse'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Internal'
+  /api/v1/sessions/{session_id}/turns/{run_id}/events:
+    get:
+      tags: [Session]
+      summary: Resume a run's event stream over SSE (turn-detach-resume).
+      description: |
+        Replays the run's event log from the beginning (or strictly after the
+        `Last-Event-ID` request header) and then tails live output until the
+        run reaches a terminal state — the endpoint a client uses when
+        reopening a session whose previous request is still generating.
+        Multiple concurrent subscribers (multiple tabs) are independent. A
+        terminal-but-still-retained run replays fully and closes; a run whose
+        retention window passed (or never existed) returns 410 — fall back to
+        the ordinary message-history read. If a status-running run's process
+        died, the stream replays what was logged, then emits a synthesized
+        terminal `done` event carrying `usage.error = "interrupted..."`.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema: {type: string}
+          description: Stream entry id from a prior subscription's last received frame; resume strictly after it.
+      responses:
+        '200':
+          description: |
+            Server-Sent Events stream of the run's events (same frame format
+            as POST /messages, including `id:` lines and `X-Run-Id` header).
+            The stream ends after the terminal `done` event.
+          content:
+            text/event-stream:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SSEAgentStart'
+                  - $ref: '#/components/schemas/SSEToken'
+                  - $ref: '#/components/schemas/SSEAgentError'
+                  - $ref: '#/components/schemas/SSEDone'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          description: The run is no longer replayable (retention window passed or unknown); read the ordinary message history instead.
         '500':
           $ref: '#/components/responses/Internal'
   /api/v1/workspace/files:
@@ -1391,3 +1650,23 @@ paths:
               schema: {$ref: '#/components/schemas/SkillsResponse'}
         '500':
           $ref: '#/components/responses/Internal'
+  /api/v1/models:
+    get:
+      tags: [Models]
+      summary: List the selectable model catalog (per-request-model-selection).
+      description: |
+        Returns the deployment's model catalog (`openai.models`) and the
+        default model name for chat-request `model`/`reasoning_effort`
+        selection. Served by the api role only (the agent role does not
+        register this endpoint). When no catalog is configured the response
+        still carries one synthesized entry (the legacy `openai.model` +
+        `openai.max_context_tokens`), so clients need no forking — but
+        request parameters are rejected with 400 in that mode.
+      responses:
+        '200':
+          description: Model catalog and default.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelsResponse'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'

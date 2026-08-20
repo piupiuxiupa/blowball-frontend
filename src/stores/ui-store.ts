@@ -2,12 +2,17 @@ import { create } from 'zustand';
 
 export type AgentStatus = 'idle' | 'running' | 'tool_call' | 'error';
 
-// 流式按 agent 分段：每个 agent_start 开启一段，token/reasoning/tool_call 追加到对应段，
+// 流式按 (agent, runId) 分段：每个 agent_start 开启一段，token/reasoning/tool_call 追加到对应段，
 // 使流式期间即按 agent 分隔展示，不再等回合结束才切分。段仅追加、不重排。
+// runId 取自事件的 meta.parent_tool_call_id（子 agent 调用的 tool_call id）——并发同名
+// 子 agent 调用各自成段、互不串文；缺失（顶层 Confucius 事件）为空串，退化为按 agent
+// 名路由的旧行为，单 agent 回合不受影响。
 export interface StreamingSegment {
   // 创建时分配的单调 id，用作稳定 React key——新段到达不会让已渲染段错位或重挂载。
   id: string;
   agent: string;
+  // 该段所属子 agent 调用的 run 身份（父 invoke tool_call id）；空串 = 无身份（顶层回合）。
+  runId: string;
   content: string;
   reasoning: string;
   toolCalls: string[];
@@ -28,7 +33,6 @@ interface UIState {
   // 版本历史抽屉开合（编辑器右侧、可折叠）。按活动文件加载版本列表。
   versionDrawerOpen: boolean;
   // 当前在主编辑区只读预览的历史版本 id；null = 正常编辑/查看态。
-  // 切换活动文件时清空（见 setActiveFile）。
   previewVersionId: string | null;
   sidebarCollapsed: boolean;
   showHiddenFiles: boolean;
@@ -38,14 +42,14 @@ interface UIState {
   setActiveFile: (path: string | null) => void;
   setFileViewMode: (mode: FileViewMode) => void;
   setVersionDrawerOpen: (open: boolean) => void;
-  setPreviewVersionId: (id: string | null) => void;
+  setPreviewVersion: (id: string | null) => void;
   toggleSidebar: () => void;
   toggleShowHiddenFiles: () => void;
-  startAgentSegment: (sessionId: string, agent: string) => void;
-  appendSegmentContent: (sessionId: string, agent: string, chunk: string) => void;
-  appendSegmentReasoning: (sessionId: string, agent: string, chunk: string) => void;
-  pushSegmentToolCall: (sessionId: string, agent: string, content: string) => void;
-  setSegmentStatus: (sessionId: string, agent: string, status: AgentStatus) => void;
+  startAgentSegment: (sessionId: string, agent: string, runId?: string) => void;
+  appendSegmentContent: (sessionId: string, agent: string, runId: string, chunk: string) => void;
+  appendSegmentReasoning: (sessionId: string, agent: string, runId: string, chunk: string) => void;
+  pushSegmentToolCall: (sessionId: string, agent: string, runId: string, content: string) => void;
+  setSegmentStatus: (sessionId: string, agent: string, runId: string, status: AgentStatus) => void;
   clearStreamingSegments: (sessionId: string) => void;
 }
 
@@ -56,18 +60,22 @@ function nextSegmentId(): string {
   return `seg-${segmentIdCounter}`;
 }
 
-// 在数组中从末尾向前找该 agent 的段：requireActive=true 时只匹配仍处 running/tool_call
-// 的活动段（用于 token/reasoning/tool_call 路由），否则匹配该 agent 的最后一段（用于状态置位）。
-// 返回该段下标，找不到返回 -1。
+// 在数组中从末尾向前找该 (agent, runId) 的段：requireActive=true 时只匹配仍处
+// running/tool_call 的活动段（用于 token/reasoning/tool_call 路由），否则匹配该复合键的
+// 最后一段（用于状态置位）。返回该段下标，找不到返回 -1。runId 缺失（undefined）视同
+// 空串——顶层事件路由到无身份段。
 function findSegmentIndex(
   segments: StreamingSegment[],
   agent: string,
+  runId: string | undefined,
   requireActive: boolean,
 ): number {
+  const run = runId ?? '';
   for (let i = segments.length - 1; i >= 0; i--) {
     const seg = segments[i];
     if (
       seg.agent === agent &&
+      seg.runId === run &&
       (!requireActive || seg.status === 'running' || seg.status === 'tool_call')
     ) {
       return i;
@@ -93,20 +101,22 @@ export const useUIStore = create<UIState>((set) => ({
   setActiveFile: (path) => set({ activeFilePath: path, previewVersionId: null }),
   setFileViewMode: (mode) => set({ fileViewMode: mode }),
   setVersionDrawerOpen: (open) => set({ versionDrawerOpen: open }),
-  setPreviewVersionId: (id) => set({ previewVersionId: id }),
+  setPreviewVersion: (id) => set({ previewVersionId: id }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   toggleShowHiddenFiles: () => set((state) => ({ showHiddenFiles: !state.showHiddenFiles })),
 
   // agent_start：push 新段、分配单调 id、置 running。活动段即数组末尾。
-  // 若该 agent 已有活动段（如 token 先于 agent_start 惰性建段），复用它而非再 push——
-  // 否则会产生重复的孤立 running 段（无人置 idle 关闭）。
-  startAgentSegment: (sessionId, agent) =>
+  // 若该 (agent, runId) 已有活动段（如 token 先于 agent_start 惰性建段），复用它而非再
+  // push——否则会产生重复的孤立 running 段（无人置 idle 关闭）。并发同名子 agent 调用
+  // 因 runId 不同而各自建段。
+  startAgentSegment: (sessionId, agent, runId) =>
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
-      if (findSegmentIndex(prev, agent, true) >= 0) return {};
+      if (findSegmentIndex(prev, agent, runId, true) >= 0) return {};
       const seg: StreamingSegment = {
         id: nextSegmentId(),
         agent,
+        runId: runId ?? '',
         content: '',
         reasoning: '',
         toolCalls: [],
@@ -120,13 +130,14 @@ export const useUIStore = create<UIState>((set) => ({
       };
     }),
 
-  // token 追加：路由到该 agent 的活动段。无活动段（token 先于 agent_start，或上一段已结束）
-  // 时惰性建段（对齐 groupMessages 兜底），确保 token 不丢失、不串入其他 agent 段。
-  appendSegmentContent: (sessionId, agent, chunk) => {
+  // token 追加：路由到该 (agent, runId) 的活动段。无活动段（token 先于 agent_start，或
+  // 上一段已结束）时惰性建段（对齐 groupMessages 兜底），确保 token 不丢失、不串入其他
+  // 调用的段——并发同名调用靠 runId 区分。
+  appendSegmentContent: (sessionId, agent, runId, chunk) => {
     if (!chunk) return;
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
-      const idx = findSegmentIndex(prev, agent, true);
+      const idx = findSegmentIndex(prev, agent, runId, true);
       if (idx >= 0) {
         const next = prev.slice();
         next[idx] = { ...next[idx], content: next[idx].content + chunk };
@@ -135,6 +146,7 @@ export const useUIStore = create<UIState>((set) => ({
       const created: StreamingSegment = {
         id: nextSegmentId(),
         agent,
+        runId: runId ?? '',
         content: chunk,
         reasoning: '',
         toolCalls: [],
@@ -147,11 +159,11 @@ export const useUIStore = create<UIState>((set) => ({
   },
 
   // reasoning 追加：同 content 的活动段路由 + 惰性建段逻辑。
-  appendSegmentReasoning: (sessionId, agent, chunk) => {
+  appendSegmentReasoning: (sessionId, agent, runId, chunk) => {
     if (!chunk) return;
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
-      const idx = findSegmentIndex(prev, agent, true);
+      const idx = findSegmentIndex(prev, agent, runId, true);
       if (idx >= 0) {
         const next = prev.slice();
         next[idx] = { ...next[idx], reasoning: next[idx].reasoning + chunk };
@@ -160,6 +172,7 @@ export const useUIStore = create<UIState>((set) => ({
       const created: StreamingSegment = {
         id: nextSegmentId(),
         agent,
+        runId: runId ?? '',
         content: '',
         reasoning: chunk,
         toolCalls: [],
@@ -171,12 +184,13 @@ export const useUIStore = create<UIState>((set) => ({
     });
   },
 
-  // tool_call：记入活动段 toolCalls 并置 tool_call 状态。无活动段时同样惰性建段，避免丢失。
-  pushSegmentToolCall: (sessionId, agent, content) => {
+  // tool_call：记入该 (agent, runId) 活动段的 toolCalls 并置 tool_call 状态。无活动段时
+  // 同样惰性建段，避免丢失。
+  pushSegmentToolCall: (sessionId, agent, runId, content) => {
     if (!content) return;
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
-      const idx = findSegmentIndex(prev, agent, true);
+      const idx = findSegmentIndex(prev, agent, runId, true);
       if (idx >= 0) {
         const next = prev.slice();
         const seg = next[idx];
@@ -186,6 +200,7 @@ export const useUIStore = create<UIState>((set) => ({
       const created: StreamingSegment = {
         id: nextSegmentId(),
         agent,
+        runId: runId ?? '',
         content: '',
         reasoning: '',
         toolCalls: [content],
@@ -198,11 +213,12 @@ export const useUIStore = create<UIState>((set) => ({
   },
 
   // 状态置位：agent_end→idle、agent_error→error/isError、tool_call→tool_call。
-  // 定位该 agent 的最后一段（不限活动态），找不到则忽略（无对应段的状态事件属异常边界）。
-  setSegmentStatus: (sessionId, agent, status) =>
+  // 定位该 (agent, runId) 的最后一段（不限活动态），找不到则忽略（无对应段的状态事件
+  // 属异常边界）。
+  setSegmentStatus: (sessionId, agent, runId, status) =>
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
-      const idx = findSegmentIndex(prev, agent, false);
+      const idx = findSegmentIndex(prev, agent, runId, false);
       if (idx < 0) return {};
       const next = prev.slice();
       const seg = next[idx];

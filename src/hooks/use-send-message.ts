@@ -13,11 +13,30 @@ interface StreamEvent {
   // tool_call：content=工具名，参数在 meta.args（见 openapi SSEToolCall）。
   // tool_result：content 是工具结果状态信封 JSON 串（{"status":0,"result":...} /
   // {"status":1,"error":...}），meta.tool_call_id 关联对应 tool_call（见 openapi SSEToolResult）。
+  // parent_tool_call_id：子 agent 调用的 run 身份（父 invoke tool_call id），仅子 agent
+  // 事件携带；并发同名调用靠它区分路由，缺失为空串（顶层事件，退化按 agent 名路由）。
   meta?: {
     args?: unknown;
     tool_call_id?: string;
+    parent_tool_call_id?: string;
     [key: string]: unknown;
   };
+}
+
+// 事件所属子 agent 调用的 run 身份；顶层事件返回空串。
+function runIdOf(payload: StreamEvent): string {
+  const id = payload.meta?.parent_tool_call_id;
+  return typeof id === 'string' ? id : '';
+}
+
+// 流缓冲键：agent 与 runId 的复合（agent 名不含空格（Confucius/Chongzhi/Liang/user），
+// 按首个空格拆回即可）。
+function bufferKey(agent: string, runId: string): string {
+  return `${agent} ${runId}`;
+}
+function splitBufferKey(key: string): { agent: string; runId: string } {
+  const i = key.indexOf(' ');
+  return { agent: key.slice(0, i), runId: key.slice(i + 1) };
 }
 
 function buildOptimisticUserMessage(sessionId: string, content: string, messages: Message[]): Message {
@@ -87,8 +106,8 @@ export function useSendMessage() {
 
       // 流式 token 本地缓冲 + rAF 节流：token / reasoning 先累积进缓冲，
       // 每个动画帧最多 flush 一次到 store，把渲染频率压到 ≤60fps。
-      // 缓冲按 agent 分桶（design D2）：flush 时把每个 agent 的串追加到其活动段，
-      // 即便后端未来并行/交错输出多 agent 也不会串段；串行回合下退化为单条目。
+      // 缓冲按 (agent, runId) 复合键分桶：flush 时把每路的串追加到其活动段——
+      // 并行/交错的同名子 agent 调用（runId 不同）不会串段；串行回合下退化为单条目。
       // 收尾事件（done / agent_error / 异常 / abort）会同步 flush 剩余缓冲，
       // 避免丢失尾部 token；取消时也确保 rAF 句柄被回收，防止泄漏。
       let tokenBuffers: Record<string, string> = {};
@@ -105,16 +124,18 @@ export function useSendMessage() {
 
       const flush = () => {
         cancelPendingFlush();
-        // 取出并重置缓冲（闭包绑定，后续 token 写入新对象），再按 agent 追加到活动段。
+        // 取出并重置缓冲（闭包绑定，后续 token 写入新对象），再按复合键追加到活动段。
         const tokens = tokenBuffers;
         const reasoning = reasoningBuffers;
         tokenBuffers = {};
         reasoningBuffers = {};
-        for (const agent in tokens) {
-          if (tokens[agent]) appendSegmentContent(sessionId, agent, tokens[agent]);
+        for (const key in tokens) {
+          const { agent, runId } = splitBufferKey(key);
+          if (tokens[key]) appendSegmentContent(sessionId, agent, runId, tokens[key]);
         }
-        for (const agent in reasoning) {
-          if (reasoning[agent]) appendSegmentReasoning(sessionId, agent, reasoning[agent]);
+        for (const key in reasoning) {
+          const { agent, runId } = splitBufferKey(key);
+          if (reasoning[key]) appendSegmentReasoning(sessionId, agent, runId, reasoning[key]);
         }
       };
 
@@ -146,24 +167,27 @@ export function useSendMessage() {
 
           switch (payload.type) {
             case 'agent_start':
-              // push 新段、置 running。活动段即数组末尾。
-              startAgentSegment(sessionId, payload.agent);
+              // push 新段、置 running。活动段即数组末尾。子 agent 调用带 runId 各自成段。
+              startAgentSegment(sessionId, payload.agent, runIdOf(payload));
               break;
-            case 'token':
-              // 按 agent 累积进缓冲，下一帧 flush 时追加到该 agent 活动段。
-              // 若 token 先于 agent_start 到达，appendSegmentContent 会按事件 agent 惰性建段。
+            case 'token': {
+              // 按 (agent, runId) 累积进缓冲，下一帧 flush 时追加到对应活动段。
+              // 若 token 先于 agent_start 到达，appendSegmentContent 会按复合键惰性建段。
+              const key = bufferKey(payload.agent, runIdOf(payload));
               if (payload.content) {
-                tokenBuffers[payload.agent] = (tokenBuffers[payload.agent] ?? '') + payload.content;
+                tokenBuffers[key] = (tokenBuffers[key] ?? '') + payload.content;
                 scheduleFlush();
               }
               break;
-            case 'reasoning':
+            }
+            case 'reasoning': {
+              const key = bufferKey(payload.agent, runIdOf(payload));
               if (payload.content) {
-                reasoningBuffers[payload.agent] =
-                  (reasoningBuffers[payload.agent] ?? '') + payload.content;
+                reasoningBuffers[key] = (reasoningBuffers[key] ?? '') + payload.content;
                 scheduleFlush();
               }
               break;
+            }
             case 'tool_call': {
               // SSE 的 tool_call：content=工具名、参数在 meta.args。组装成与持久化一致的
               // {"tool_call_id","name","args"} JSON（后端 event_mapper.go 同此格式），否则
@@ -174,7 +198,7 @@ export function useSendMessage() {
                 name: payload.content ?? '',
                 args: meta.args ?? {},
               });
-              pushSegmentToolCall(sessionId, payload.agent, record);
+              pushSegmentToolCall(sessionId, payload.agent, runIdOf(payload), record);
               break;
             }
             case 'tool_result': {
@@ -182,19 +206,19 @@ export function useSendMessage() {
               // JSON 串——registry 工具为 {"status":0,"result":...} / {"status":1,"error":...}，
               // invoke_* 子 agent 分发为子 agent 输出原文。直接并入活动段 toolCalls，由
               // ToolCallBubble.parseToolCall 识别为「工具结果」，并在 status===1 时整卡标红。
-              pushSegmentToolCall(sessionId, payload.agent, payload.content ?? '');
+              pushSegmentToolCall(sessionId, payload.agent, runIdOf(payload), payload.content ?? '');
               break;
             }
             case 'agent_end':
-              // 先 flush 该 agent 的待落缓冲，再置 idle——否则置 idle 后待 flush 的 token
-              // 会因找不到活动段而被惰性建段，产生重复的孤立 running 段（与 agent_error 同理）。
+              // 先 flush 该路的待落缓冲，再按复合键置 idle——否则置 idle 后待 flush 的
+              // token 会因找不到活动段而被惰性建段，产生重复的孤立 running 段。
               flush();
-              setSegmentStatus(sessionId, payload.agent, 'idle');
+              setSegmentStatus(sessionId, payload.agent, runIdOf(payload), 'idle');
               break;
             case 'agent_error':
               // 出错时先同步 flush，确保已收到的尾部 token 不丢失、不截断，再置段 error。
               flush();
-              setSegmentStatus(sessionId, payload.agent, 'error');
+              setSegmentStatus(sessionId, payload.agent, runIdOf(payload), 'error');
               break;
             case 'done':
               // 仅同步 flush 剩余缓冲；流式分段的清空交给流结束后的 reconcileHistory，
