@@ -171,7 +171,40 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Read a single session owned by the authenticated user.
+         * @description Returns the session detail — the session-list entry superset plus
+         *     create_time. A session that does not exist or belongs to another user
+         *     returns 404 (existence is never disclosed). An active-run claim read
+         *     failure degrades to generating=false; a title lookup failure degrades
+         *     to an empty title.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID of the session to read. */
+                    session_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Session detail. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SessionDetail"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                404: components["responses"]["NotFound"];
+                500: components["responses"]["Internal"];
+            };
+        };
         put?: never;
         post?: never;
         /**
@@ -342,11 +375,16 @@ export interface paths {
                     };
                 };
                 /**
-                 * @description Malformed body, or a rejected per-request model selection
+                 * @description Malformed body, a rejected per-request model selection
                  *     (per-request-model-selection): `INVALID_MODEL` (unknown catalog
                  *     name) or `INVALID_EFFORT` (invalid effort value, non-`none`
                  *     effort explicitly requested on a `thinking: false` entry, or an
-                 *     effort conflicting with a configured agent `output_schema`).
+                 *     effort conflicting with a configured agent `output_schema`), or
+                 *     `CONTENT_TOO_LONG` (add-input-token-limit): the `content`'s
+                 *     estimated token count exceeds `messages.max_input_tokens`
+                 *     (default 5000; CJK-aware heuristic estimate, message carries the
+                 *     limit and the estimate). Rejected before any storage I/O, the
+                 *     session-run claim, or an LLM call.
                  */
                 400: {
                     headers: {
@@ -377,6 +415,21 @@ export interface paths {
                                 run_id: string;
                             };
                         };
+                    };
+                };
+                /**
+                 * @description `REQUEST_TOO_LARGE` (add-input-token-limit): the request body
+                 *     exceeds the 1MB backstop cap and is rejected during parsing,
+                 *     before any storage I/O. Independent of
+                 *     `messages.max_input_tokens` (an explicit 0 disables the token
+                 *     check, never this cap).
+                 */
+                413: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
                     };
                 };
                 500: components["responses"]["Internal"];
@@ -1447,6 +1500,35 @@ export interface components {
         };
         SessionListResponse: {
             sessions: components["schemas"]["SessionListEntry"][];
+        };
+        /**
+         * @description Single-session read (GET /api/v1/sessions/{session_id}) — the
+         *     SessionListEntry superset plus create_time.
+         */
+        SessionDetail: {
+            session_id: string;
+            title: string;
+            /**
+             * Format: date-time
+             * @description RFC3339 timestamp of session creation.
+             */
+            create_time: string;
+            /**
+             * Format: date-time
+             * @description RFC3339 timestamp of the last update.
+             */
+            update_time: string;
+            /**
+             * @description Whether a turn is currently running for this session
+             *     (turn-detach-resume) — same active-run-claim semantics as the
+             *     session list. An unreadable claim degrades to false.
+             */
+            generating: boolean;
+            /**
+             * @description The active turn's run id — the attach/cancel target. Present only
+             *     while `generating` is true (the reload discovery path).
+             */
+            run_id?: string;
         };
         CreateSessionResponse: {
             /**
