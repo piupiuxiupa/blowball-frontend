@@ -1,10 +1,11 @@
-import { RefreshCw, Save, EyeOff, Pencil, Loader2, Camera, History } from 'lucide-react';
+import { RefreshCw, Save, EyeOff, Pencil, Loader2, Camera, History, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/ui-store';
 import { useAuthStore } from '@/stores/auth-store';
 import { useFileEditStore } from '@/stores/file-edit-store';
 import { useFileEditActions } from '@/hooks/use-file-edit';
+import { useDownloadFile } from '@/hooks/use-file-content';
 import { useSnapshotVersion } from '@/hooks/use-file-versioning';
 import { isOfficeVersConfigured } from '@/lib/office-vers';
 import { canEdit, getFileExtension, isOffice } from '@/lib/file-type';
@@ -61,6 +62,18 @@ export function FileToolbar({ onRefresh, isRefreshing }: FileToolbarProps) {
     } catch (err) {
       alert(`记录版本失败：${err instanceof Error ? err.message : String(err)}`);
     }
+  };
+
+  // 下载走 download 端点（token 走 query，浏览器原生 <a download>）。dirty 拦截与
+  // 记录版本同理：端点下载的是已落盘内容，未保存时放行会拿到旧版文件。
+  const downloadFile = useDownloadFile(activeFilePath);
+  const handleDownload = () => {
+    if (!activeFilePath) return;
+    if (canEdit(activeFilePath) && isDirty) {
+      alert('当前有未保存改动，请先保存后再下载');
+      return;
+    }
+    downloadFile();
   };
 
   return (
@@ -139,6 +152,17 @@ export function FileToolbar({ onRefresh, isRefreshing }: FileToolbarProps) {
             </Button>
           </>
         )}
+
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 shrink-0"
+          onClick={handleDownload}
+          title="下载文件"
+          aria-label="下载文件"
+        >
+          <Download className="h-4 w-4" />
+        </Button>
 
         <Button
           variant="ghost"
