@@ -1900,6 +1900,15 @@ export interface components {
             name: string;
             /** @description The model's context window; the context-compaction threshold for turns selecting it (0.8 × this value). */
             max_context_tokens: number;
+            /**
+             * @description The model's output-token quota, shared by every agent of a turn
+             *     that resolves to this entry (per-model-completion-budget). The wire
+             *     family translates it: a `thinking: true` model sends it as
+             *     `max_completion_tokens`, a `thinking: false` model as the legacy
+             *     `max_tokens` parameter. The per-entry `length_continue`
+             *     continuation switch is operator-only and not exposed here.
+             */
+            max_completion_tokens: number;
             /** @description Whether the model supports reasoning (gates non-`none` reasoning_effort values). */
             thinking: boolean;
         };
