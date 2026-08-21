@@ -59,7 +59,7 @@ interface UIState {
   setActiveFile: (path: string | null) => void;
   setFileViewMode: (mode: FileViewMode) => void;
   setVersionDrawerOpen: (open: boolean) => void;
-  setPreviewVersion: (id: string | null) => void;
+  setPreviewVersionId: (id: string | null) => void;
   toggleSidebar: () => void;
   toggleShowHiddenFiles: () => void;
   setTurnRun: (sessionId: string, runId: string | null) => void;
@@ -123,7 +123,7 @@ export const useUIStore = create<UIState>((set) => ({
   setActiveFile: (path) => set({ activeFilePath: path, previewVersionId: null }),
   setFileViewMode: (mode) => set({ fileViewMode: mode }),
   setVersionDrawerOpen: (open) => set({ versionDrawerOpen: open }),
-  setPreviewVersion: (id) => set({ previewVersionId: id }),
+  setPreviewVersionId: (id) => set({ previewVersionId: id }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   toggleShowHiddenFiles: () => set((state) => ({ showHiddenFiles: !state.showHiddenFiles })),
 
