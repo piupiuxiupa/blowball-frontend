@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { apiGetStream, apiPostAgent, ApiRequestError } from '@/lib/api';
-import type { SessionListResponse, TurnStatusResponse } from '@/lib/api';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { apiGet, apiGetStream, apiPostAgent, ApiRequestError } from '@/lib/api';
+import type { SessionDetail, SessionListResponse, TurnStatusResponse } from '@/lib/api';
 import { queryClient } from '@/lib/query-client';
 import { consumeTurnStream, peekTurnEventId, clearTurnStreamState, reconcileTurnHistory } from '@/lib/turn-stream';
 import { useUIStore } from '@/stores/ui-store';
@@ -17,10 +17,13 @@ import { useUIStore } from '@/stores/ui-store';
 const attachControllers = new Map<string, AbortController>();
 
 // 回落普通历史读取：410（run 保留窗口已过）/ 404（列表项滞后，run 从未存在）/
-// 重连耗尽时。清掉半截流式分段，失效两个缓存让观察者重取。
+// 重连耗尽时。清掉半截流式分段，失效各缓存让观察者重取。
 async function fallbackToHistory(sessionId: string): Promise<void> {
   useUIStore.getState().clearStreamingSegments(sessionId);
   await queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  // 详情缓存同步失效（adapt-session-detail）：回落即 run 已不在，滞留的
+  // generating=true 会让 useAttachRun 反复发起注定失败的探测。
+  await queryClient.invalidateQueries({ queryKey: ['session', sessionId] });
   await queryClient.invalidateQueries({ queryKey: ['messages', sessionId] });
 }
 
@@ -72,8 +75,10 @@ export async function attachToRun(sessionId: string, runId: string): Promise<voi
     attachControllers.delete(sessionId);
     useUIStore.getState().setTurnRun(sessionId, null);
     clearTurnStreamState(sessionId);
-    // turn 终局后让列表徽标（generating）尽快消失，不等下一次聚焦重取。
+    // turn 终局后让列表徽标（generating）尽快消失，不等下一次聚焦重取；
+    // 单会话详情缓存同因（adapt-session-detail）。
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    void queryClient.invalidateQueries({ queryKey: ['session', sessionId] });
   }
 }
 
@@ -90,22 +95,45 @@ export async function cancelTurn(sessionId: string, runId: string): Promise<void
   }
 }
 
-// 打开（切换到）一个 generating 会话时自动 attach。run id 取自会话列表项——
-// 这是 reload 后的发现路径（页面已丢失发送时的 X-Run-Id / 事件 meta）。
-// 仅在会话切换时判断：正在查看的会话若在他处开始生成，由发送撞 409 的转 attach
-// 兜底；列表徽标随聚焦重取更新（见 useSessions 的 refetchOnWindowFocus）。
+// 打开（切换到）一个 generating 会话时自动 attach。run id 发现为双通道
+// （adapt-session-detail，缓存先行、详情裁决）：
+//   快路径——切换瞬间列表缓存已带 generating+run_id 即先行接入，不等详情往返
+//   （缓存过时致 run 已终局时由 attach 的 410/404 回落兜底）；
+//   详情通道——活动会话的单会话详情查询（GET /sessions/:id）修正缓存漏报
+//   （SPA 内部切换不触发列表重取，缓存可能过期未反映他处开始生成），并使聚焦
+//   重取能发现「查看中会话在他处开始生成」（此前只能靠发送撞 409 兜底）。
+// 详情已加载时以其结果为权威（idle 压制缓存的过时 generating）。
+// run_id 仅 generating 为 true 时由后端携带；turnRuns 占位防重复订阅。
 export function useAttachRun() {
   const queryClient = useQueryClient();
   const activeSessionId = useUIStore((s) => s.activeSessionId);
 
+  // 单会话详情新鲜探测：仅活动会话启用（有界请求量：一次切换/一次聚焦各一个
+  // GET）。走 API base——CRUD 端点，非流式、不落 agent 分区；聚焦重取的豁免理由
+  // 同 ['sessions']：不碰文件内容（全局关闭是为保护 Monaco 未保存编辑）。
+  const detailQuery = useQuery({
+    queryKey: ['session', activeSessionId],
+    enabled: activeSessionId !== null,
+    queryFn: () =>
+      apiGet<SessionDetail>(`/api/v1/sessions/${encodeURIComponent(activeSessionId as string)}`),
+    refetchOnWindowFocus: true,
+  });
+  const detail = detailQuery.data;
+
   useEffect(() => {
     if (!activeSessionId) return;
-    const entry = queryClient
+    const fromCache = queryClient
       .getQueryData<SessionListResponse>(['sessions'])
       ?.sessions.find((s) => s.session_id === activeSessionId);
-    // run_id 仅 generating 为 true 时由后端携带；turnRuns 占位防重复订阅。
-    if (!entry?.generating || !entry.run_id) return;
+    // 详情已加载 → 权威裁决；未加载 → 列表缓存快路径先行。
+    let candidate: string | undefined;
+    if (detail) {
+      candidate = detail.generating ? detail.run_id : undefined;
+    } else if (fromCache?.generating) {
+      candidate = fromCache.run_id;
+    }
+    if (!candidate) return;
     if (useUIStore.getState().turnRuns[activeSessionId]) return;
-    void attachToRun(activeSessionId, entry.run_id);
-  }, [activeSessionId, queryClient]);
+    void attachToRun(activeSessionId, candidate);
+  }, [activeSessionId, detail, queryClient]);
 }

@@ -317,6 +317,11 @@ export type SessionListResponse = paths['/api/v1/sessions']['get']['responses'][
 // 会话列表项含 generating/run_id（turn-detach-resume：运行中标记与 attach/cancel 目标，
 // run_id 仅 generating 为 true 时出现）。
 export type SessionListEntry = NonNullable<SessionListResponse['sessions']>[number];
+// GET /api/v1/sessions/{session_id}：单会话详情（列表项超集 + create_time）。
+// adapt-session-detail：其 run_id 是 run 发现的新鲜探测通道（打开/聚焦活动会话时
+// 读取，见 useAttachRun 的双通道发现）；create_time 暂无 UI 消费点。
+export type SessionDetail =
+  paths['/api/v1/sessions/{session_id}']['get']['responses']['200']['content']['application/json'];
 // POST /turns/:run_id/cancel 的响应：{run_id, status}，status 含 cancelling（已接受）
 // 与幂等取消已终局 run 时上报的终态。
 export type TurnStatusResponse =
