@@ -361,6 +361,12 @@ export type CreateNodeRequest =
   paths['/api/v1/workspace/files/{path}']['post']['requestBody']['content']['application/json'];
 export type CreateNodeResponse =
   paths['/api/v1/workspace/files/{path}']['post']['responses']['200']['content']['application/json'];
+// GET /api/v1/workspace/search：按名字子串递归搜索工作区条目（workspace-search）。
+// pattern 是字面子串（正则元字符由后端转义，ignore_case 该端点默认 true）；结果按
+// 路径字典序分页，total 在命中收集上限时是下界，truncated 表示窗口外还有匹配。
+export type WorkspaceSearchResponse =
+  paths['/api/v1/workspace/search']['get']['responses']['200']['content']['application/json'];
+export type WorkspaceSearchEntry = NonNullable<WorkspaceSearchResponse['entries']>[number];
 export type MCPToolsResponse =
   paths['/api/v1/mcp/tools']['get']['responses']['200']['content']['application/json'];
 export type MCPTool = NonNullable<MCPToolsResponse['tools']>[number];

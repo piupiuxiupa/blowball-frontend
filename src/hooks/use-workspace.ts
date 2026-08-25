@@ -1,6 +1,13 @@
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiDelete, apiGet, apiPost, apiPut, apiUpload, ApiRequestError } from '@/lib/api';
-import type { FileListResponse, UploadResponse, RenameResponse, CreateNodeResponse } from '@/lib/api';
+import type {
+  FileListResponse,
+  UploadResponse,
+  RenameResponse,
+  CreateNodeResponse,
+  WorkspaceSearchResponse,
+} from '@/lib/api';
 import { useUIStore } from '@/stores/ui-store';
 import { useFileEditStore } from '@/stores/file-edit-store';
 
@@ -37,6 +44,45 @@ export function useWorkspace(path?: string) {
     error: filesQuery.error,
     uploadFile: uploadMutation.mutateAsync,
     isUploading: uploadMutation.isPending,
+  };
+}
+
+// 防抖值：输入停顿 delay 毫秒后才更新，避免每个键入字符都发出一次搜索请求。
+function useDebouncedValue<T>(value: T, delay = 300): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+
+// 工作区搜索（GET /api/v1/workspace/search，workspace-search 契约）：按条目名子串
+// 递归匹配全工作区（后端复用 xizhi_find 引擎，正则元字符按字面处理；ignore_case
+// 该端点默认 true，无需传参）。空 pattern 不发起请求（enabled=false）；防抖后的值
+// 并入 queryKey，隐藏文件开关与文件树共用同一 ui-store 开关保持口径一致。
+// 结果按路径字典序分页（head_limit 用后端默认 200），truncated=true 表示窗口外
+// 还有匹配——MVP 不翻页，仅提示收窄关键词。
+export function useWorkspaceSearch(pattern: string) {
+  const includeHidden = useUIStore((s) => s.showHiddenFiles);
+  const debounced = useDebouncedValue(pattern.trim());
+  const enabled = debounced !== '';
+
+  const searchQuery = useQuery({
+    queryKey: ['workspace-search', debounced, { hidden: includeHidden }],
+    queryFn: () =>
+      apiGet<WorkspaceSearchResponse>('/api/v1/workspace/search', {
+        params: { pattern: debounced, include_hidden: includeHidden ? 'true' : 'false' },
+      }),
+    enabled,
+  });
+
+  return {
+    entries: searchQuery.data?.entries ?? [],
+    total: searchQuery.data?.total ?? 0,
+    truncated: searchQuery.data?.truncated ?? false,
+    isSearching: enabled && searchQuery.isFetching,
+    error: searchQuery.error,
   };
 }
 

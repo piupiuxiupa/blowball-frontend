@@ -688,6 +688,115 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspace/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search workspace entries by name.
+         * @description Recursively searches the user's workspace for files and directories
+         *     whose NAME (basename, never the path) contains the pattern as a
+         *     literal substring — regex metacharacters are escaped server-side, so
+         *     `report(1).md` and `a+b` match their literal spellings. Reuses the
+         *     agent-side xizhi_find engine (fd / pure-Go dual backend), so matching
+         *     semantics match the agent tool: hidden entries excluded by default, no
+         *     symlink following, ignore files (.gitignore) not consulted. Unlike the
+         *     agent tool, `ignore_case` defaults to `true` (human-search convention)
+         *     and the reserved `.blowball/` namespace is searchable — both as a
+         *     search root and (with `include_hidden=true`) as content.
+         *
+         *     Entries are returned in lexicographic path order (the stable
+         *     pagination backbone; no relevance ranking). `size`/`update_time` are
+         *     stat'd only for the returned page; an entry deleted between the walk
+         *     and the stat stays in the page with `size: 0` and `update_time: ""`.
+         *     The whole search (walk + stat) is bounded by a server-side timeout
+         *     (~10s) — a timeout returns 500 SEARCH_TIMEOUT rather than hanging.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /**
+                     * @description Substring matched against entry names. Empty/blank matches
+                     *     everything (combine with `type` for type-only enumeration). The
+                     *     response echoes this raw value.
+                     * @example report(1)
+                     */
+                    pattern?: string;
+                    /** @description Restrict results to files, directories, or both. */
+                    type?: "file" | "dir" | "any";
+                    /**
+                     * @description Workspace-relative search root (empty/blank = the workspace
+                     *     root). A non-existent root returns 200 with empty entries; a
+                     *     regular-file root returns 400. `.blowball/` subpaths are allowed
+                     *     (unlike the agent's xizhi_find).
+                     */
+                    path?: string;
+                    /** @description Maximum component count below the search root (default unlimited). */
+                    max_depth?: number;
+                    /** @description Case-insensitive matching. Defaults to TRUE on this endpoint. */
+                    ignore_case?: boolean;
+                    /** @description Include entries whose names start with '.' (and hidden subtrees). */
+                    include_hidden?: boolean;
+                    /** @description Page size; `applied_limit` echoes the effective value. */
+                    head_limit?: number;
+                    /** @description Page offset into the lexicographically sorted matches. */
+                    offset?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /**
+                 * @description A page of matches. `total` counts all matches (a lower bound when
+                 *     the internal ~10000-entry collect ceiling was hit); `truncated` is
+                 *     true when more matches exist beyond the window.
+                 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["WorkspaceSearchResponse"];
+                    };
+                };
+                /**
+                 * @description Invalid `type`/`max_depth`/`head_limit`/`offset`, or the search
+                 *     root is a regular file.
+                 */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                /** @description Search timed out or an unexpected internal error. */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspace/upload": {
         parameters: {
             query?: never;
@@ -1771,6 +1880,38 @@ export interface components {
         };
         FileListResponse: {
             files: components["schemas"]["FileEntry"][];
+        };
+        /** @description One matched entry in a GET /workspace/search page. */
+        WorkspaceSearchEntry: {
+            /** @description Path relative to the search root ('/'-separated). */
+            path: string;
+            /** @description Basename of the entry. */
+            name: string;
+            /** @enum {string} */
+            type: "file" | "dir";
+            /**
+             * Format: int64
+             * @description Bytes; 0 when the entry vanished before the stat (TOCTOU degrade).
+             */
+            size: number;
+            /**
+             * Format: date-time
+             * @description RFC3339 UTC mtime; "" when the entry vanished before the stat.
+             */
+            update_time: string;
+        };
+        WorkspaceSearchResponse: {
+            /** @description The caller's raw pattern input (never the escaped regex). */
+            pattern: string;
+            /** @description Match count before pagination (a lower bound when the collect ceiling was hit). */
+            total: number;
+            /** @description True when matches exist beyond the offset+head_limit window (or the collect ceiling was hit). */
+            truncated: boolean;
+            /** @description Effective page size. */
+            applied_limit: number;
+            /** @description Effective window offset. */
+            applied_offset: number;
+            entries: components["schemas"]["WorkspaceSearchEntry"][];
         };
         UploadResponse: {
             /** @description Workspace-relative path of the stored file. */

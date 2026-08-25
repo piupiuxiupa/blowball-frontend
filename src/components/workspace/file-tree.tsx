@@ -12,10 +12,13 @@ import {
   Eye,
   EyeOff,
   Plus,
+  Search,
+  X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   useWorkspace,
+  useWorkspaceSearch,
   useDeleteFile,
   useRenameFile,
   useMoveNode,
@@ -29,7 +32,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { UploadButton } from './upload-button';
-import type { FileEntry } from '@/lib/api';
+import type { FileEntry, WorkspaceSearchEntry } from '@/lib/api';
 
 // joinPath builds the workspace-relative path for an entry from its parent
 // prefix and basename. The backend's catch-all resolves these verbatim, so a
@@ -42,6 +45,11 @@ function joinPath(parent: string, name: string): string {
 function basename(path: string): string {
   const idx = path.lastIndexOf('/');
   return idx < 0 ? path : path.slice(idx + 1);
+}
+
+function dirname(path: string): string {
+  const idx = path.lastIndexOf('/');
+  return idx < 0 ? '' : path.slice(0, idx);
 }
 
 // 规整「新建」输入名：trim、去首尾斜杠；拒绝空、含反斜杠、`.`/`..` 段或空段（`//`）。
@@ -65,6 +73,9 @@ export function FileTree() {
   const [rootDragOver, setRootDragOver] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [createType, setCreateType] = useState<'file' | 'directory' | null>(null);
+  // 搜索态：非空时滚动区以扁平结果列表替代目录树（搜索期间树仍在缓存中，清空即恢复）。
+  const [search, setSearch] = useState('');
+  const isSearching = search.trim() !== '';
   // 失效 ['workspace'] 会命中根目录与所有已展开子目录的查询（前缀匹配），
   // 一次刷新拉到全部最新文件；任一在途时刷新图标旋转。
   const isFetching = useIsFetching({ queryKey: ['workspace'] }) > 0;
@@ -156,45 +167,160 @@ export function FileTree() {
         </div>
       </div>
 
-      <ScrollArea className="flex-1">
-        {/* 根区域作为 drop 目标（移到根）；命中子目录时其 onDrop 会 stopPropagation，不再冒泡到这里。 */}
-        <div
-          className={cn('p-2', rootDragOver && 'rounded-md ring-2 ring-inset ring-primary/40')}
-          onDragOver={(e) => {
-            if (e.dataTransfer.types.includes(PATH_MIME) || e.dataTransfer.types.includes('text/plain')) {
+      {/* 搜索行：输入即搜（hook 内 300ms 防抖），Esc / X 清空并回到目录树。 */}
+      <div className="flex items-center gap-1.5 border-b border-white/50 bg-white/10 px-3 py-1.5">
+        <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
               e.preventDefault();
-              setRootDragOver(true);
+              setSearch('');
             }
           }}
-          onDragLeave={() => setRootDragOver(false)}
-          onDrop={handleRootDrop}
-        >
-          {isLoading && (
-            <div className="space-y-2">
-              <Skeleton className="h-6 w-full" />
-              <Skeleton className="h-6 w-full" />
-              <Skeleton className="h-6 w-full" />
-            </div>
-          )}
+          placeholder="搜索工作区文件"
+          aria-label="搜索工作区文件"
+          className="h-6 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+        />
+        {search && (
+          <button
+            type="button"
+            onClick={() => setSearch('')}
+            className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground"
+            title="清空搜索"
+            aria-label="清空搜索"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
 
-          {error && <div className="p-2 text-xs text-destructive">加载文件失败</div>}
+      <ScrollArea className="flex-1">
+        {isSearching ? (
+          <SearchResults query={search} />
+        ) : (
+          /* 根区域作为 drop 目标（移到根）；命中子目录时其 onDrop 会 stopPropagation，不再冒泡到这里。 */
+          <div
+            className={cn('p-2', rootDragOver && 'rounded-md ring-2 ring-inset ring-primary/40')}
+            onDragOver={(e) => {
+              if (e.dataTransfer.types.includes(PATH_MIME) || e.dataTransfer.types.includes('text/plain')) {
+                e.preventDefault();
+                setRootDragOver(true);
+              }
+            }}
+            onDragLeave={() => setRootDragOver(false)}
+            onDrop={handleRootDrop}
+          >
+            {isLoading && (
+              <div className="space-y-2">
+                <Skeleton className="h-6 w-full" />
+                <Skeleton className="h-6 w-full" />
+                <Skeleton className="h-6 w-full" />
+              </div>
+            )}
 
-          {!isLoading && files.length === 0 && !createType && (
-            <div className="p-2 text-xs text-muted-foreground">暂无文件</div>
-          )}
+            {error && <div className="p-2 text-xs text-destructive">加载文件失败</div>}
 
-          {createType && (
-            <CreateRow
-              type={createType}
-              onDone={() => setCreateType(null)}
-              onCancel={() => setCreateType(null)}
-            />
-          )}
+            {!isLoading && files.length === 0 && !createType && (
+              <div className="p-2 text-xs text-muted-foreground">暂无文件</div>
+            )}
 
-          <FileNodeList entries={files} parentPath="" />
-        </div>
+            {createType && (
+              <CreateRow
+                type={createType}
+                onDone={() => setCreateType(null)}
+                onCancel={() => setCreateType(null)}
+              />
+            )}
+
+            <FileNodeList entries={files} parentPath="" />
+          </div>
+        )}
       </ScrollArea>
     </div>
+  );
+}
+
+// 搜索结果列表：扁平展示全工作区按名字匹配的条目（路径字典序）。加载/错误/空态
+// 各自占一行提示；truncated 时说明只取了第一页（head_limit 200），提示收窄关键词。
+function SearchResults({ query }: { query: string }) {
+  const { entries, truncated, isSearching, error } = useWorkspaceSearch(query);
+
+  if (error) {
+    return (
+      <div className="p-2 text-xs text-destructive">
+        搜索失败：{error instanceof Error ? error.message : String(error)}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-0.5 p-2">
+      {isSearching && (
+        <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> 搜索中…
+        </div>
+      )}
+
+      {!isSearching && entries.length === 0 && (
+        <div className="p-2 text-xs text-muted-foreground">无匹配结果</div>
+      )}
+
+      {entries.map((entry) => (
+        <SearchRow key={entry.path} entry={entry} />
+      ))}
+
+      {truncated && (
+        <div className="px-2 py-1 text-xs text-muted-foreground">
+          匹配较多，仅显示前 {entries.length} 条，可输入更精确的关键词
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 单条搜索结果：文件行点击经 selectFile 打开（带 dirty 拦截）；目录行仅展示
+// （活动文件只能是文件，树内也不支持定位展开，故不做点击行为）。
+function SearchRow({ entry }: { entry: WorkspaceSearchEntry }) {
+  const isDir = entry.type === 'dir';
+  const { activeFilePath } = useUIStore();
+  const parent = dirname(entry.path);
+  const isActive = !isDir && activeFilePath === entry.path;
+  const icon = isDir ? (
+    <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+  ) : (
+    <File className="h-4 w-4 shrink-0 text-muted-foreground" />
+  );
+
+  const content = (
+    <>
+      {icon}
+      <span className="truncate">{entry.name}</span>
+      {parent && (
+        <span className="ml-auto max-w-[45%] shrink-0 truncate text-[11px] text-muted-foreground">
+          {parent}
+        </span>
+      )}
+    </>
+  );
+
+  if (isDir) {
+    return <div className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm opacity-70">{content}</div>;
+  }
+
+  return (
+    <button
+      onClick={() => selectFile(entry.path)}
+      className={cn(
+        'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-all',
+        isActive
+          ? 'bg-accent text-accent-foreground shadow-[inset_0_0_0_1px_rgba(255,159,10,0.35)]'
+          : 'hover:bg-foreground/[0.05]'
+      )}
+    >
+      {content}
+    </button>
   );
 }
 
