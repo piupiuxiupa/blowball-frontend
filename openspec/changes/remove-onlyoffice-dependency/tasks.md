@@ -24,9 +24,9 @@
 
 ## 4. xlsx 编辑器
 
-- [ ] 4.1 集成 Univer 网格：SheetJS 读取工作簿 → Univer 数据模型渲染（样式、多 sheet）
-- [ ] 4.2 单元格编辑与公式计算，dirty 跟踪
-- [ ] 4.3 保存：Univer 编辑结果 → exceljs 写出 xlsx 字节（保留未修改 sheet 的原始数据）
+- [x] 4.1 集成 Univer 网格：SheetJS 读取工作簿 → Univer 数据模型渲染（样式、多 sheet）
+- [x] 4.2 单元格编辑与公式计算，dirty 跟踪
+- [x] 4.3 保存：Univer 编辑结果 → exceljs 写出 xlsx 字节（保留未修改 sheet 的原始数据）
 
 ## 5. pptx 编辑器
 
