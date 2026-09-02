@@ -12,9 +12,9 @@
 
 ## 2. Worker 解析层
 
-- [ ] 2.1 实现 `office-engine-worker`：主线程 fetch 字节 → transfer 传入 → 解析返回可结构化克隆模型（媒体转 Blob URL 引用）
-- [ ] 2.2 定义引擎错误协议与上限（字节/部件数/解析超时），超限走「文件过大，请下载」降级
-- [ ] 2.3 保存序列化进 Worker：docx `saveDocx` 段落补丁、pptx 仅重写被修改部件、xlsx 经 exceljs 产出
+- [x] 2.1 实现 `office-engine-worker`：主线程 fetch 字节 → transfer 传入 → 解析返回可结构化克隆模型（媒体转 Blob URL 引用）
+- [x] 2.2 定义引擎错误协议与上限（字节/部件数/解析超时），超限走「文件过大，请下载」降级
+- [x] 2.3 保存序列化进 Worker：docx `saveDocx` 段落补丁、pptx 仅重写被修改部件、xlsx 经 exceljs 产出
 
 ## 3. docx 精简编辑器
 
