@@ -44,6 +44,6 @@
 
 ## 7. 拆除 OnlyOffice 与验收
 
-- [ ] 7.1 `VITE_OFFICE_ENGINE` flag 并行期：client 默认、onlyoffice 可回滚；三格式打开/编辑/保存/版本预览手工验收
-- [ ] 7.2 删除 OnlyOffice 前端面：`office-viewer`、`lib/onlyoffice`、`use-office-config`、`use-office-version-config`、`onlyoffice.d.ts`、`main.tsx` CSP 特例与相关 openapi 引用
-- [ ] 7.3 验收：构建/lint 通过；网络面板无 DocumentServer 请求；mammoth/SheetJS 兜底路径有效；更新 `.env.example` 文档
+- [x] 7.1 并行期范围调整：单分支直接移除（flag 无可切换对象，回滚 = revert 分支）；部署前需人工验收三格式打开/编辑/保存/版本预览
+- [x] 7.2 删除 OnlyOffice 前端面：`office-viewer`、`lib/onlyoffice`、`use-office-config`、`use-office-version-config`、`onlyoffice.d.ts`、`main.tsx` CSP 特例与相关 openapi 引用
+- [x] 7.3 验收：构建/lint 通过；网络面板无 DocumentServer 请求；mammoth/SheetJS 兜底路径有效；更新 `.env.example` 文档

@@ -16,6 +16,7 @@ import { officeEngine } from '@/lib/office/worker/client';
 import type { XlsxSheetData } from '@/lib/office/worker/messages';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ExcelViewer } from './excel-viewer';
 
 type UniverAPI = ReturnType<typeof createUniver>['univerAPI'];
 
@@ -103,6 +104,7 @@ export function XlsxEditor({
   const apiRef = useRef<UniverAPI | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [fallbackUrl, setFallbackUrl] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const viewModeRef = useRef(viewMode);
   viewModeRef.current = viewMode;
@@ -120,6 +122,7 @@ export function XlsxEditor({
     if (!loadedBytes || !containerRef.current) return;
     let disposed = false;
     setError(null);
+    setFallbackUrl(null);
     try {
       const wb = XLSX.read(loadedBytes, { type: 'array', cellFormula: true, cellStyles: true });
       const sheets = wb.SheetNames.map((name) =>
@@ -147,6 +150,11 @@ export function XlsxEditor({
       setReady(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      try {
+        setFallbackUrl(URL.createObjectURL(new Blob([loadedBytes as BlobPart])));
+      } catch {
+        setFallbackUrl(null);
+      }
     }
     return () => {
       disposed = true;
@@ -218,6 +226,18 @@ export function XlsxEditor({
   }
 
   if (error) {
+    if (fallbackUrl) {
+      return (
+        <div className="flex h-full flex-col">
+          <div className="border-b border-border bg-amber-50 px-3 py-1.5 text-xs text-amber-700">
+            高保真解析失败（{error}），已切换只读模式
+          </div>
+          <div className="min-h-0 flex-1">
+            <ExcelViewer path={path} url={fallbackUrl} />
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex h-full items-center justify-center p-4 text-sm text-destructive">
         表格解析失败：{error}

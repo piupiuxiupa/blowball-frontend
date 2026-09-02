@@ -31,6 +31,7 @@ import { officeEngine, OfficeEngineError } from '@/lib/office/worker/client';
 import { blocksToPmDoc, pmDocToSaveBlocks } from '@/lib/office/docx/pm-convert';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { WordViewer } from './word-viewer';
 
 /** Read-only passthrough chip: protected OOXML the lean editor cannot model. */
 const DocxPassthrough = Node.create({
@@ -124,6 +125,7 @@ export function DocxEditor({
   const [parsed, setParsed] = useState<ParsedState | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [fallbackUrl, setFallbackUrl] = useState<string | null>(null);
   const handleRef = useRef<number | null>(null);
 
   const bytesQuery = useQuery({
@@ -138,6 +140,7 @@ export function DocxEditor({
     if (!loadedBytes) return;
     let cancelled = false;
     setParseError(null);
+    setFallbackUrl(null);
     const bytes = loadedBytes;
     officeEngine
       .parseDocx(bytes)
@@ -149,6 +152,11 @@ export function DocxEditor({
       .catch((e: unknown) => {
         if (cancelled) return;
         setParseError(e instanceof OfficeEngineError ? e.message : String(e));
+        try {
+          setFallbackUrl(URL.createObjectURL(new Blob([bytes as BlobPart])));
+        } catch {
+          setFallbackUrl(null);
+        }
       });
     return () => {
       cancelled = true;
@@ -272,6 +280,18 @@ export function DocxEditor({
   }
 
   if (parseError) {
+    if (fallbackUrl) {
+      return (
+        <div className="flex h-full flex-col">
+          <div className="border-b border-border bg-amber-50 px-3 py-1.5 text-xs text-amber-700">
+            高保真解析失败（{parseError}），已切换只读模式
+          </div>
+          <div className="min-h-0 flex-1">
+            <WordViewer path={path} url={fallbackUrl} />
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex h-full items-center justify-center p-4 text-sm text-destructive">
         文档解析失败：{parseError}

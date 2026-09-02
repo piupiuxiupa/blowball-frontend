@@ -9,8 +9,7 @@ import './index.css';
 // via a page-wide `upgrade-insecure-requests` Content Security Policy. Off by
 // default; enable with VITE_UPGRADE_INSECURE_REQUESTS in the deployment env (see
 // openspec change force-https-csp). Injected at bootstrap, before any on-demand
-// resource — e.g. the OnlyOffice api.js script, which loads when a user opens an
-// office file — is requested. MUST stay off locally: it rewrites http://localhost:*
+// resource is requested. MUST stay off locally: it rewrites http://localhost:*
 // to https://localhost:* (no TLS listener) and breaks all local requests.
 if (import.meta.env.VITE_UPGRADE_INSECURE_REQUESTS) {
   const meta = document.createElement('meta');

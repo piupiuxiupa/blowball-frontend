@@ -13,8 +13,8 @@ interface VersionPreviewProps {
 }
 
 // 只读预览某个历史版本：按文件类型分发。
-// - Office 文件（docx/xlsx/pptx 及 legacy）整体委托给 OfficeVersionViewer（经 OnlyOffice
-//   view 模式渲染，未配置时内部回退轻量查看器）；本组件不为 Office 拉取版本字节。
+// - Office 文件（docx/xlsx/pptx 及 legacy）整体委托给 OfficeVersionViewer（客户端
+//   引擎只读渲染）；本组件不为 Office 拉取版本字节。
 // - 文本/图片/PDF 由 MediaVersionPreview 从 office-vers 拉取版本字节后渲染。
 // 预览 SHALL NOT 落盘或改工作区。
 export function VersionPreview({ path, versionId }: VersionPreviewProps) {

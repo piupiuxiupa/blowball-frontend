@@ -15,7 +15,7 @@ interface OfficeVersionViewerProps {
 // 只读预览某个历史版本的 Office 文件（spec office-client-editors）：
 // docx/xlsx/pptx 一律用客户端引擎（与实时文件同一套，view-only，强制 readOnly
 // 以隔离全局 fileViewMode），版本字节来自 office-vers；legacy（doc/xls/ppt）
-// 同样仅下载。不再请求 onlyoffice-version-config 或依赖 DocumentServer 转换缓存。
+// 同样仅下载。
 // 预览 SHALL NOT 落盘或改工作区。
 export function OfficeVersionViewer({ path, versionId }: OfficeVersionViewerProps) {
   const ext = getFileExtension(path);

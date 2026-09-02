@@ -3,7 +3,7 @@ import { apiGet, apiPut, getApiBase, getToken } from '@/lib/api';
 import type { FileContentResponse, FileContentWriteResponse } from '@/lib/api';
 
 // opts.enabled lets callers opt out of the text-content fetch for files that
-// are rendered another way (e.g. office files via OnlyOffice's binary download
+// are rendered another way (e.g. office files via the client engines' binary
 // endpoint, where /content would just 400 with BINARY_FILE). Defaults to
 // "fetch whenever a path is set".
 //

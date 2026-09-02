@@ -31,7 +31,7 @@ export interface StreamingSegment {
 // 文件查看模式：默认「只读」(view)，切到「编辑」(edit) 后 Monaco 可写并暴露保存入口。
 // 与 activeFilePath 对称地放在 ui-store；**跨文件粘住**——切换活动文件不重置模式
 // （切走的拦截由 dirty 态负责，见 file-edit-store / dirty-guard-dialog）。
-// Office 文件经 OnlyOffice 自身渲染，但同样读取此值决定 edit/view（见 office-viewer）。
+// Office 文件经客户端编辑器渲染，同样读取此值决定 edit/view（见 file-renderer）。
 export type FileViewMode = 'view' | 'edit';
 
 interface UIState {
