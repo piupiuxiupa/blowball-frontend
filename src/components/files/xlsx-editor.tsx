@@ -8,8 +8,8 @@ import zhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
 import { createUniver } from '@/lib/office/create-univer';
 import '@univerjs/preset-sheets-core/lib/index.css';
 import { Save } from 'lucide-react';
-import { apiUpload } from '@/lib/api';
 import { getPreviewUrl } from '@/hooks/use-file-content';
+import { saveOfficeFile, XLSX_MIME } from '@/lib/office/save';
 import { useUIStore } from '@/stores/ui-store';
 import { useFileEditStore } from '@/stores/file-edit-store';
 import { officeEngine } from '@/lib/office/worker/client';
@@ -22,6 +22,10 @@ type UniverAPI = ReturnType<typeof createUniver>['univerAPI'];
 interface XlsxEditorProps {
   path: string;
   refreshKey?: number;
+  /** Optional pre-fetched bytes (historical version preview); skips the path fetch. */
+  bytes?: Uint8Array;
+  /** Force read-only (historical version preview ignores the global edit mode). */
+  readOnly?: boolean;
 }
 
 async function fetchOfficeBytes(path: string, refreshKey: number): Promise<Uint8Array> {
@@ -83,8 +87,14 @@ function sheetToUniverData(
   };
 }
 
-export function XlsxEditor({ path, refreshKey = 0 }: XlsxEditorProps) {
+export function XlsxEditor({
+  path,
+  refreshKey = 0,
+  bytes: bytesOverride,
+  readOnly = false,
+}: XlsxEditorProps) {
   const viewMode = useUIStore((s) => s.fileViewMode);
+  const editable = !readOnly && viewMode === 'edit';
   const markDirty = useFileEditStore((s) => s.markDirty);
   const setSaving = useFileEditStore((s) => s.setSaving);
   const queryClient = useQueryClient();
@@ -101,15 +111,17 @@ export function XlsxEditor({ path, refreshKey = 0 }: XlsxEditorProps) {
     queryKey: ['office-bytes', path, refreshKey],
     queryFn: () => fetchOfficeBytes(path, refreshKey),
     staleTime: Infinity,
+    enabled: bytesOverride === undefined,
   });
+  const loadedBytes = bytesOverride ?? bytesQuery.data;
 
   // Read with SheetJS → mount a Univer instance once per document.
   useEffect(() => {
-    if (!bytesQuery.data || !containerRef.current) return;
+    if (!loadedBytes || !containerRef.current) return;
     let disposed = false;
     setError(null);
     try {
-      const wb = XLSX.read(bytesQuery.data, { type: 'array', cellFormula: true, cellStyles: true });
+      const wb = XLSX.read(loadedBytes, { type: 'array', cellFormula: true, cellStyles: true });
       const sheets = wb.SheetNames.map((name) =>
         sheetToUniverData(name, wb.Sheets[name]!),
       );
@@ -130,7 +142,7 @@ export function XlsxEditor({ path, refreshKey = 0 }: XlsxEditorProps) {
         styles: {},
       });
       univerAPI.addEvent(univerAPI.Event.CommandExecuted, () => {
-        if (viewModeRef.current === 'edit') markDirty(path, true)
+        if (viewModeRef.current === 'edit' && !readOnly) markDirty(path, true)
       })
       setReady(true);
     } catch (e) {
@@ -147,7 +159,7 @@ export function XlsxEditor({ path, refreshKey = 0 }: XlsxEditorProps) {
       univerRef.current = null;
       apiRef.current = null;
     };
-  }, [bytesQuery.data, path, markDirty]);
+  }, [loadedBytes, path, markDirty]);
 
   useEffect(() => {
     return () => markDirty(path, false);
@@ -183,15 +195,17 @@ export function XlsxEditor({ path, refreshKey = 0 }: XlsxEditorProps) {
         return { name: sheet.name ?? sheetId, rows };
       });
       const bytes = await officeEngine.saveXlsx(sheets);
-      const fileName = path.split('/').pop() ?? 'workbook.xlsx';
-      const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
-      const file = new File([bytes as BlobPart], fileName, {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      const outcome = await saveOfficeFile({
+        path,
+        bytes,
+        originalBytes: bytesOverride ?? bytesQuery.data ?? null,
+        mime: XLSX_MIME,
       });
-      await apiUpload('/api/v1/workspace/upload', { file, subdir: parent || undefined });
-      markDirty(path, false);
-      await queryClient.invalidateQueries({ queryKey: ['workspace'] });
-      await queryClient.invalidateQueries({ queryKey: ['office-bytes', path] });
+      if (outcome === 'saved') {
+        markDirty(path, false);
+        await queryClient.invalidateQueries({ queryKey: ['workspace'] });
+        await queryClient.invalidateQueries({ queryKey: ['office-bytes', path] });
+      }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -199,7 +213,7 @@ export function XlsxEditor({ path, refreshKey = 0 }: XlsxEditorProps) {
     }
   }, [path, markDirty, queryClient, setSaving]);
 
-  if (bytesQuery.isLoading || (!ready && !error)) {
+  if (!loadedBytes || (!ready && !error)) {
     return <Skeleton className="m-4 h-[600px] w-full" />;
   }
 
@@ -213,7 +227,7 @@ export function XlsxEditor({ path, refreshKey = 0 }: XlsxEditorProps) {
 
   return (
     <div className="flex h-full flex-col">
-      {viewMode === 'edit' && (
+      {editable && (
         <div className="flex items-center justify-end border-b border-border px-2 py-1">
           {saveError && <span className="mr-2 text-xs text-destructive">{saveError}</span>}
           <Button variant="outline" size="sm" className="h-7 gap-1" onClick={() => void save()}>

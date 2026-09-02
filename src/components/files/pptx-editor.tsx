@@ -3,8 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Stage, Layer, Rect, Group, Transformer } from 'react-konva';
 import type Konva from 'konva';
 import { ChevronLeft, ChevronRight, Square, Type, Trash2, Save, ImagePlus } from 'lucide-react';
-import { apiUpload } from '@/lib/api';
 import { getPreviewUrl } from '@/hooks/use-file-content';
+import { saveOfficeFile, PPTX_MIME } from '@/lib/office/save';
 import { useUIStore } from '@/stores/ui-store';
 import { useFileEditStore } from '@/stores/file-edit-store';
 import { officeEngine, OfficeEngineError } from '@/lib/office/worker/client';
@@ -21,6 +21,10 @@ const EMU_PER_PX = 9525;
 interface PptxEditorProps {
   path: string;
   refreshKey?: number;
+  /** Optional pre-fetched bytes (historical version preview); skips the path fetch. */
+  bytes?: Uint8Array;
+  /** Force read-only (historical version preview ignores the global edit mode). */
+  readOnly?: boolean;
 }
 
 async function fetchOfficeBytes(path: string, refreshKey: number): Promise<Uint8Array> {
@@ -48,8 +52,14 @@ const plainTextOfNode = (node: RenderNode): string => {
     .join('\n');
 };
 
-export function PptxEditor({ path, refreshKey = 0 }: PptxEditorProps) {
+export function PptxEditor({
+  path,
+  refreshKey = 0,
+  bytes: bytesOverride,
+  readOnly = false,
+}: PptxEditorProps) {
   const viewMode = useUIStore((s) => s.fileViewMode);
+  const viewEditable = !readOnly && viewMode === 'edit';
   const markDirty = useFileEditStore((s) => s.markDirty);
   const setSaving = useFileEditStore((s) => s.setSaving);
   const queryClient = useQueryClient();
@@ -72,12 +82,15 @@ export function PptxEditor({ path, refreshKey = 0 }: PptxEditorProps) {
   const selectedNodeRef = useRef<Konva.Group | null>(null);
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const editsRef = useRef<PptxEditOp[]>([]);
+  const originalBytesRef = useRef<Uint8Array | null>(null);
 
   const bytesQuery = useQuery({
     queryKey: ['office-bytes', path, refreshKey],
     queryFn: () => fetchOfficeBytes(path, refreshKey),
     staleTime: Infinity,
+    enabled: bytesOverride === undefined,
   });
+  const loadedBytes = bytesOverride ?? bytesQuery.data;
 
   const slide: RenderSlide | undefined = state?.slides[pageIndex];
 
@@ -111,9 +124,10 @@ export function PptxEditor({ path, refreshKey = 0 }: PptxEditorProps) {
   }, []);
 
   useEffect(() => {
-    if (!bytesQuery.data) return;
-    parseBytes(bytesQuery.data, 0);
-  }, [bytesQuery.data, parseBytes]);
+    if (!loadedBytes) return;
+    originalBytesRef.current ??= loadedBytes;
+    parseBytes(loadedBytes, 0);
+  }, [loadedBytes, parseBytes]);
 
   // Register embedded fonts for drawing.
   useEffect(() => {
@@ -145,13 +159,13 @@ export function PptxEditor({ path, refreshKey = 0 }: PptxEditorProps) {
     const tr = transformerRef.current;
     const node = selectedNodeRef.current;
     if (!tr) return;
-    if (viewMode === 'edit' && node) {
+    if (viewEditable && node) {
       tr.nodes([node]);
       tr.getLayer()?.batchDraw();
     } else {
       tr.nodes([]);
     }
-  }, [selectedId, viewMode, state, pageIndex]);
+  }, [selectedId, viewEditable, state, pageIndex]);
 
   /** Mutate deck in worker → serialize → reparse, keeping visual state consistent. */
   const applyEdits = useCallback(
@@ -181,16 +195,18 @@ export function PptxEditor({ path, refreshKey = 0 }: PptxEditorProps) {
     setSaveError(null);
     try {
       const bytes = await officeEngine.savePptx(handle, []);
-      const fileName = path.split('/').pop() ?? 'deck.pptx';
-      const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
-      const file = new File([bytes as BlobPart], fileName, {
-        type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      const outcome = await saveOfficeFile({
+        path,
+        bytes,
+        originalBytes: originalBytesRef.current,
+        mime: PPTX_MIME,
       });
-      await apiUpload('/api/v1/workspace/upload', { file, subdir: parent || undefined });
-      editsRef.current = [];
-      markDirty(path, false);
-      await queryClient.invalidateQueries({ queryKey: ['workspace'] });
-      await queryClient.invalidateQueries({ queryKey: ['office-bytes', path] });
+      if (outcome === 'saved') {
+        editsRef.current = [];
+        markDirty(path, false);
+        await queryClient.invalidateQueries({ queryKey: ['workspace'] });
+        await queryClient.invalidateQueries({ queryKey: ['office-bytes', path] });
+      }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -223,10 +239,10 @@ export function PptxEditor({ path, refreshKey = 0 }: PptxEditorProps) {
     [applyEdits, pageIndex, selectedId, state],
   );
 
-  const editable = viewMode === 'edit';
+  const editable = viewEditable;
   const nodes = useMemo(() => slide?.nodes ?? [], [slide]);
 
-  if (bytesQuery.isLoading || (!state && !error)) {
+  if (!loadedBytes || (!state && !error)) {
     return (
       <div className="space-y-3 p-4">
         <Skeleton className="h-[540px] w-full max-w-4xl" />

@@ -24,6 +24,7 @@
     "@types/pako": "^2.0.4",
     "@univerjs/preset-sheets-core": "^0.25.1",
     "@univerjs/themes": "^0.25.1",
+    "bidi-js": "^1.0.3",
     "buffer": "^6.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

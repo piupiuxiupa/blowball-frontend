@@ -8,6 +8,9 @@ import {
   isOffice,
   isHtml,
   canEdit,
+  isLegacyOffice,
+  isWord,
+  isExcel,
 } from '@/lib/file-type';
 import { MarkdownViewer } from './markdown-viewer';
 import { HtmlViewer } from './html-viewer';
@@ -15,7 +18,10 @@ import { CodeViewer } from './code-viewer';
 import { ImageViewer } from './image-viewer';
 import { PdfViewer } from './pdf-viewer';
 import { BinaryPlaceholder } from './binary-placeholder';
-import { OfficeViewer } from './office-viewer';
+import { DocxEditor } from './docx-editor';
+import { XlsxEditor } from './xlsx-editor';
+import { PptxEditor } from './pptx-editor';
+import { LegacyOfficeDownload } from './legacy-office-download';
 import { EditableTextViewer } from './editable-text-viewer';
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -28,10 +34,8 @@ interface FileRendererProps {
 export function FileRenderer({ refreshKey }: FileRendererProps) {
   const activeFilePath = useUIStore((s) => s.activeFilePath);
   const fileViewMode = useUIStore((s) => s.fileViewMode);
-  // Office files render through OnlyOffice (binary, via the download endpoint),
-  // so we skip the text-content fetch for them — otherwise /content 400s with
-  // BINARY_FILE on every office open. ext is computed before the hook so it can
-  // gate the query (hooks must run unconditionally).
+  // Office（docx/xlsx/pptx，浏览器客户端引擎）与 legacy（仅下载）都不走文本
+  // content 请求。ext 在 hook 前计算以 gate 查询（hooks 必须无条件运行）。
   const ext = getFileExtension(activeFilePath ?? '');
   const editable = !!activeFilePath && fileViewMode === 'edit' && canEdit(activeFilePath);
   const { data, isLoading } = useFileContent(activeFilePath, {
@@ -60,9 +64,18 @@ export function FileRenderer({ refreshKey }: FileRendererProps) {
   }
 
   // Route binary previewers by extension before falling back to text content.
-  // Office 读取统一 fileViewMode 决定 edit/view（task 2.2）。
+  // Office 客户端编辑器统一读取 fileViewMode 决定 edit/view。
   if (isOffice(ext)) {
-    return <OfficeViewer path={activeFilePath} refreshKey={refreshKey} />;
+    if (isWord(ext)) {
+      return <DocxEditor path={activeFilePath} refreshKey={refreshKey} />;
+    }
+    if (isExcel(ext)) {
+      return <XlsxEditor path={activeFilePath} refreshKey={refreshKey} />;
+    }
+    return <PptxEditor path={activeFilePath} refreshKey={refreshKey} />;
+  }
+  if (isLegacyOffice(ext)) {
+    return <LegacyOfficeDownload path={activeFilePath} />;
   }
   if (isPdf(ext)) {
     return <PdfViewer path={activeFilePath} refreshKey={refreshKey} />;

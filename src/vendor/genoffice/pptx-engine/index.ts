@@ -651,28 +651,8 @@ export async function savePptx(opened: OpenedPptx): Promise<Uint8Array> {
     compressionOptions: { level: 6 },
   })
 }
-
-/**
- * Same output as savePptx, written straight to `filePath`.
- *
- * Prefer this for anything that lands on disk: savePptx has to assemble the whole
- * package into one contiguous buffer, which on a large deck fails outright with
- * "Array buffer allocation failed". Streaming keeps peak memory to a chunk at a
- * time. JSZip throws stream errors from inside its own scheduled callbacks, so the
- * stream's 'error' event — not just the returned promise — has to be handled or the
- * throw escapes as an uncaught exception and takes the process down.
- */
-export async function savePptxToFile(opened: OpenedPptx, filePath: string): Promise<void> {
-  const { createWriteStream } = await import('node:fs')
-  const { pipeline } = await import('node:stream/promises')
-  const source = buildZip(opened).generateNodeStream({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 6 },
-    streamFiles: true,
-  })
-  await pipeline(source, createWriteStream(filePath))
-}
+// savePptxToFile (Node fs streaming) removed in the browser vendoring — the web
+// client always consumes the in-memory Uint8Array from savePptx (see vendor README).
 
 /**
  * Sync the in-memory model with what savePptx/savePptxToFile just wrote, without

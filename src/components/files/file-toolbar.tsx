@@ -46,13 +46,16 @@ export function FileToolbar({ onRefresh, isRefreshing }: FileToolbarProps) {
 
   const ext = getFileExtension(activeFilePath);
   const editable = canEdit(activeFilePath); // 文本可编辑（Monaco + PUT/content）
-  const supportsMode = editable || isOffice(ext); // 文本编辑 或 Office（OnlyOffice）
+  const supportsMode = editable || isOffice(ext); // 文本编辑 或 Office 客户端编辑器
   const inEdit = fileViewMode === 'edit';
+  // dirty 会影响「记录版本 / 下载」拿到的是已落盘内容：文本与 Office（客户端编辑器
+  // 同样有 dirty 跟踪）都需拦截；legacy 仅下载、无 dirty。
+  const dirtyRelevant = (canEdit(activeFilePath) || isOffice(ext)) && isDirty;
 
-  // 记录版本：文本 dirty 时拦截提示（Office 无 dirty，直取已落盘内容）。
+  // 记录版本：dirty 时拦截提示（文本与 Office 客户端编辑器一致）。
   const handleSnapshot = async () => {
     if (!activeFilePath) return;
-    if (canEdit(activeFilePath) && isDirty) {
+    if (dirtyRelevant) {
       alert('当前有未保存改动，请先保存后再记录版本');
       return;
     }
@@ -69,7 +72,7 @@ export function FileToolbar({ onRefresh, isRefreshing }: FileToolbarProps) {
   const downloadFile = useDownloadFile(activeFilePath);
   const handleDownload = () => {
     if (!activeFilePath) return;
-    if (canEdit(activeFilePath) && isDirty) {
+    if (dirtyRelevant) {
       alert('当前有未保存改动，请先保存后再下载');
       return;
     }

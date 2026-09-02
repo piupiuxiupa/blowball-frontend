@@ -26,6 +26,11 @@ Only boundary-level changes are made here; engine internals stay upstream:
   (`private readonly zip` → `readonly zip`), `pptx-render/build-chart.ts` +
   `scene3d.ts` (unused map params), `pptx-engine/slide-transfer.ts` (callback
   param type). App tsconfig bumped to ES2022 for `replaceAll`/`Intl.Segmenter`.
+- `pptx-engine/index.ts`: `savePptxToFile` (Node fs streaming save) removed —
+  the web client consumes the in-memory Uint8Array from `savePptx`.
+- `pptx-konva/` additionally vendored from apps/slides renderer (NodeBody,
+  konva-adapter, ChartBody, text-hit-area, cjk-script, image-loader): pure
+  React+Konva render layer over pptx-render's RenderTree, no Electron deps.
 - Pptx parsing entry points exposed as pure functions over `Uint8Array`
   (no Electron/IPC).
 

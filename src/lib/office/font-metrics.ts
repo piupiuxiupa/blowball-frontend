@@ -11,7 +11,7 @@ import './engine-polyfills'
  * Bundled subset: `src/assets/office-fonts/*.ttf|otf` are picked up via glob.
  * The directory starts empty (budget <=15MB); add files without code changes.
  */
-import opentype from 'opentype.js'
+import { parse as parseFont } from 'opentype.js'
 import {
   OpentypeMetrics,
   type FontMetricsProvider,
@@ -53,7 +53,7 @@ export class BrowserFontRegistry {
     try {
       // opentype.parse needs an ArrayBuffer at offset 0.
       const copy = sfnt.slice()
-      const font = opentype.parse(copy.buffer as ArrayBuffer)
+      const font = parseFont(copy.buffer as ArrayBuffer)
       this.addFace(family, style, font as unknown as OpentypeFontLike)
       return true
     } catch {

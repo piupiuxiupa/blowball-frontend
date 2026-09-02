@@ -36,11 +36,11 @@
 
 ## 6. 保存管线与文件面板整合
 
-- [ ] 6.1 二进制保存 API 客户端：后端端点就绪前用 `POST /upload` 临时联调，就绪后切 PUT 覆盖写；失败保留 dirty 并提示
-- [ ] 6.2 保存前 hash 冲突校验 + 覆盖确认对话框（复用 dirty-guard 模式）
-- [ ] 6.3 `file-type.ts` 拆分 office/legacy 判定；`file-renderer` 分发到三个客户端编辑器；legacy 渲染下载卡片并隐藏编辑入口
-- [ ] 6.4 历史版本预览切换为客户端引擎只读渲染（`office-version-viewer` 重写），移除 `onlyoffice-version-config` 请求
-- [ ] 6.5 `file-versioning`：Office 文件 dirty 时拦截「记录版本」，与文本文件语义对齐
+- [x] 6.1 二进制保存 API 客户端：后端端点就绪前用 `POST /upload` 临时联调，就绪后切 PUT 覆盖写；失败保留 dirty 并提示
+- [x] 6.2 保存前 hash 冲突校验 + 覆盖确认对话框（复用 dirty-guard 模式）
+- [x] 6.3 `file-type.ts` 拆分 office/legacy 判定；`file-renderer` 分发到三个客户端编辑器；legacy 渲染下载卡片并隐藏编辑入口
+- [x] 6.4 历史版本预览切换为客户端引擎只读渲染（`office-version-viewer` 重写），移除 `onlyoffice-version-config` 请求
+- [x] 6.5 `file-versioning`：Office 文件 dirty 时拦截「记录版本」，与文本文件语义对齐
 
 ## 7. 拆除 OnlyOffice 与验收
 

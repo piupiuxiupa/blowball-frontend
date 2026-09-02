@@ -23,8 +23,8 @@ import {
   Redo2,
   Save,
 } from 'lucide-react';
-import { apiUpload } from '@/lib/api';
 import { getPreviewUrl } from '@/hooks/use-file-content';
+import { saveOfficeFile, DOCX_MIME } from '@/lib/office/save';
 import { useUIStore } from '@/stores/ui-store';
 import { useFileEditStore } from '@/stores/file-edit-store';
 import { officeEngine, OfficeEngineError } from '@/lib/office/worker/client';
@@ -92,6 +92,10 @@ const DocxHeading = Heading.extend({
 interface DocxEditorProps {
   path: string;
   refreshKey?: number;
+  /** Optional pre-fetched bytes (historical version preview); skips the path fetch. */
+  bytes?: Uint8Array;
+  /** Force read-only (historical version preview ignores the global edit mode). */
+  readOnly?: boolean;
 }
 
 interface ParsedState {
@@ -106,8 +110,14 @@ async function fetchOfficeBytes(path: string, refreshKey: number): Promise<Uint8
   return new Uint8Array(await res.arrayBuffer());
 }
 
-export function DocxEditor({ path, refreshKey = 0 }: DocxEditorProps) {
+export function DocxEditor({
+  path,
+  refreshKey = 0,
+  bytes: bytesOverride,
+  readOnly = false,
+}: DocxEditorProps) {
   const viewMode = useUIStore((s) => s.fileViewMode);
+  const editable = !readOnly && viewMode === 'edit';
   const markDirty = useFileEditStore((s) => s.markDirty);
   const setSaving = useFileEditStore((s) => s.setSaving);
   const queryClient = useQueryClient();
@@ -120,13 +130,15 @@ export function DocxEditor({ path, refreshKey = 0 }: DocxEditorProps) {
     queryKey: ['office-bytes', path, refreshKey],
     queryFn: () => fetchOfficeBytes(path, refreshKey),
     staleTime: Infinity,
+    enabled: bytesOverride === undefined,
   });
+  const loadedBytes = bytesOverride ?? bytesQuery.data;
 
   useEffect(() => {
-    if (!bytesQuery.data) return;
+    if (!loadedBytes) return;
     let cancelled = false;
     setParseError(null);
-    const bytes = bytesQuery.data;
+    const bytes = loadedBytes;
     officeEngine
       .parseDocx(bytes)
       .then((result) => {
@@ -141,7 +153,7 @@ export function DocxEditor({ path, refreshKey = 0 }: DocxEditorProps) {
     return () => {
       cancelled = true;
     };
-  }, [bytesQuery.data]);
+  }, [loadedBytes]);
 
   useEffect(() => {
     return () => {
@@ -169,7 +181,7 @@ export function DocxEditor({ path, refreshKey = 0 }: DocxEditorProps) {
         DocxPassthrough,
       ],
       content: { type: 'doc', content: [{ type: 'paragraph' }] },
-      editable: viewMode === 'edit',
+      editable,
       onUpdate: () => markDirty(path, true),
     },
     [path],
@@ -187,8 +199,8 @@ export function DocxEditor({ path, refreshKey = 0 }: DocxEditorProps) {
   }, [editor, parsed, path, markDirty]);
 
   useEffect(() => {
-    editor?.setEditable(viewMode === 'edit');
-  }, [editor, viewMode]);
+    editor?.setEditable(!readOnly && viewMode === 'edit');
+  }, [editor, viewMode, readOnly]);
 
   const save = useCallback(async () => {
     if (!editor || !parsed) return;
@@ -198,15 +210,17 @@ export function DocxEditor({ path, refreshKey = 0 }: DocxEditorProps) {
       const body = editor.getJSON().content ?? [];
       const saveBlocks = pmDocToSaveBlocks(body, parsed.doc);
       const bytes = await officeEngine.saveDocx(parsed.handle, saveBlocks);
-      const fileName = path.split('/').pop() ?? 'document.docx';
-      const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
-      const file = new File([bytes as BlobPart], fileName, {
-        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      const outcome = await saveOfficeFile({
+        path,
+        bytes,
+        originalBytes: bytesOverride ?? bytesQuery.data ?? null,
+        mime: DOCX_MIME,
       });
-      await apiUpload('/api/v1/workspace/upload', { file, subdir: parent || undefined });
-      markDirty(path, false);
-      await queryClient.invalidateQueries({ queryKey: ['workspace'] });
-      await queryClient.invalidateQueries({ queryKey: ['office-bytes', path] });
+      if (outcome === 'saved') {
+        markDirty(path, false);
+        await queryClient.invalidateQueries({ queryKey: ['workspace'] });
+        await queryClient.invalidateQueries({ queryKey: ['office-bytes', path] });
+      }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -247,7 +261,7 @@ export function DocxEditor({ path, refreshKey = 0 }: DocxEditorProps) {
     return groups;
   }, [editor]);
 
-  if (bytesQuery.isLoading || (parsed === null && parseError === null)) {
+  if (!loadedBytes || (parsed === null && parseError === null)) {
     return (
       <div className="space-y-3 p-4">
         <Skeleton className="h-4 w-3/4" />
@@ -267,7 +281,7 @@ export function DocxEditor({ path, refreshKey = 0 }: DocxEditorProps) {
 
   return (
     <div className="flex h-full flex-col">
-      {viewMode === 'edit' && editor && (
+      {editable && editor && (
         <div className="flex flex-wrap items-center gap-1 border-b border-border px-2 py-1">
           {toolbar?.map((group, gi) => (
             <div key={gi} className="flex items-center gap-0.5 border-r border-border pr-1 last:border-r-0">
