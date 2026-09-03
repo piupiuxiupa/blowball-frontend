@@ -2,14 +2,13 @@ import { memo, useState, type ReactNode } from 'react';
 import { Loader2, Wrench, AlertCircle, Check, ChevronDown, Lightbulb } from 'lucide-react';
 import type { AgentStatus } from '@/stores/ui-store';
 import { MarkdownRenderer } from './markdown-renderer';
-import { StreamingContent } from './streaming-content';
-import { ToolCallBubble } from './tool-call-bubble';
+import { OrderedMessageContent } from './ordered-message-content';
+import type { MessageTimelineItem } from '@/lib/message-timeline';
 
 interface CollapsibleSubAgentProps {
   agent: string;
-  content: string;
   reasoning: string;
-  toolCalls: string[];
+  timeline: MessageTimelineItem[];
   status: AgentStatus;
   isLive: boolean;
 }
@@ -53,13 +52,13 @@ function StatusIndicator({ status }: { status: AgentStatus }): ReactNode {
 
 // 子 agent（Chongzhi / Liang）输出：glass 气泡 + 「名字 + 状态指示」头部，正文可折叠。
 // 默认折叠——同时适用于持久化块与流式段，**包括正在输出的活动段**（design D5）。
-// 折叠时不渲染正文（内容仍在 state 持续累积）；展开后显示 reasoning + Markdown + tool_call，
+// 折叠时不渲染正文（内容仍在 state 持续累积）；展开后显示 reasoning 与该调用自己的
+// timeline，正文片段和工具记录在气泡内按到达顺序渲染，
 // 且展开后尾部继续流式追加。折叠活动段还顺带跳过 Markdown 增量渲染，省去重解析成本。
 export const CollapsibleSubAgent = memo(function CollapsibleSubAgent({
   agent,
-  content,
   reasoning,
-  toolCalls,
+  timeline,
   status,
   isLive,
 }: CollapsibleSubAgentProps) {
@@ -98,17 +97,9 @@ export const CollapsibleSubAgent = memo(function CollapsibleSubAgent({
             </details>
           )}
 
-          {content && <StreamingContent text={content} isLive={isLive} />}
+          <OrderedMessageContent timeline={timeline} isLive={isLive} />
 
-          {toolCalls.length > 0 && (
-            <div className="space-y-1.5">
-              {toolCalls.map((tool, idx) => (
-                <ToolCallBubble key={idx} raw={tool} />
-              ))}
-            </div>
-          )}
-
-          {!content && !reasoning && status === 'running' && (
+          {timeline.length === 0 && !reasoning && status === 'running' && (
             <div className="text-xs text-muted-foreground">思考中…</div>
           )}
         </div>

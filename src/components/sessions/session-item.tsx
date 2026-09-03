@@ -91,7 +91,10 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
         onClick={onClick}
         disabled={isDeleting || isEditing}
         className={cn(
-          'flex flex-1 items-center gap-2 rounded-xl px-2.5 py-2 text-left text-sm transition-all',
+          // min-w-0：flex item 默认 min-width:auto 会被 nowrap 标题的 min-content 撑大，
+          // 按钮不收缩→整行溢出被 ScrollArea 硬裁切，标题的 truncate 永远拿不到宽度约束
+          // （无省略号）。放开最小宽度后 ellipsis 才真正生效。
+          'flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2.5 py-2 text-left text-sm transition-all',
           // 生成中多一个取消按钮的空间（pr-20），否则悬停按钮会互相叠压。
           session.generating ? 'pr-20' : 'pr-14',
           isActive

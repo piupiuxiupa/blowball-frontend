@@ -2,13 +2,12 @@ import { memo } from 'react';
 import { Lightbulb } from 'lucide-react';
 import type { AgentStatus } from '@/stores/ui-store';
 import { MarkdownRenderer } from './markdown-renderer';
-import { StreamingContent } from './streaming-content';
-import { ToolCallBubble } from './tool-call-bubble';
+import { OrderedMessageContent } from './ordered-message-content';
+import type { MessageTimelineItem } from '@/lib/message-timeline';
 
 interface BareConfuciusProps {
-  content: string;
   reasoning?: string;
-  toolCalls: string[];
+  timeline: MessageTimelineItem[];
   status: AgentStatus;
   isLive: boolean;
 }
@@ -16,11 +15,10 @@ interface BareConfuciusProps {
 // 主编排 agent（Confucius）的输出：全宽裸 Markdown——无 glass 背景、无圆角气泡、
 // 无头像、无名字标签，仿 ChatGPT/Claude.ai 主回答形态（design D4）。
 // 活动段走增量 StreamingContent；已完成段 / 持久化块走全量 Markdown。
-// 其 tool_call 仍以内联 ToolCallBubble 显示（含 invoke_*，按用户决定全部显示）。
+// 工具调用 / 结果不汇总到末尾，而是与正文片段按事件到达顺序内联渲染。
 export const BareConfucius = memo(function BareConfucius({
-  content,
   reasoning,
-  toolCalls,
+  timeline,
   status,
   isLive,
 }: BareConfuciusProps) {
@@ -38,17 +36,9 @@ export const BareConfucius = memo(function BareConfucius({
         </details>
       )}
 
-      {content && <StreamingContent text={content} isLive={isLive} />}
+      <OrderedMessageContent timeline={timeline} isLive={isLive} />
 
-      {toolCalls.length > 0 && (
-        <div className="space-y-1.5">
-          {toolCalls.map((tool, idx) => (
-            <ToolCallBubble key={idx} raw={tool} />
-          ))}
-        </div>
-      )}
-
-      {!content && !reasoning && status === 'running' && (
+      {timeline.length === 0 && !reasoning && status === 'running' && (
         <div className="text-sm text-muted-foreground">思考中…</div>
       )}
     </div>

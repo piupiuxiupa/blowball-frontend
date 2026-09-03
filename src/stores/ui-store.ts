@@ -1,5 +1,12 @@
 import { create } from 'zustand';
 import type { ReasoningEffort } from '@/lib/api';
+import {
+  appendTimelineText,
+  appendTimelineTool,
+  attachTimelineToolResult,
+  type MessageTimelineItem,
+  type TimelineToolOptions,
+} from '@/lib/message-timeline';
 
 export type AgentStatus = 'idle' | 'running' | 'tool_call' | 'error';
 
@@ -10,8 +17,9 @@ export type AgentStatus = 'idle' | 'running' | 'tool_call' | 'error';
 // 真实 id)。唯一需要显式排除的是读取侧:use-messages 的 enabled。
 export const DRAFT_SESSION_ID = 'draft';
 
-// 流式按 (agent, runId) 分段：每个 agent_start 开启一段，token/reasoning/tool_call 追加到对应段，
-// 使流式期间即按 agent 分隔展示，不再等回合结束才切分。段仅追加、不重排。
+// 流式按 (agent, runId) 分段：每个 agent_start 开启一段，token/reasoning/tool_call
+// 追加到对应段的 timeline，使流式期间即按 agent 分隔且段内保序展示，不再等回合结束才切分。
+// 段仅追加、不重排。
 // runId 取自事件的 meta.parent_tool_call_id（子 agent 调用的 tool_call id）——并发同名
 // 子 agent 调用各自成段、互不串文；缺失（顶层 Confucius 事件）为空串，退化为按 agent
 // 名路由的旧行为，单 agent 回合不受影响。
@@ -23,7 +31,9 @@ export interface StreamingSegment {
   runId: string;
   content: string;
   reasoning: string;
-  toolCalls: string[];
+  // 正文片段与工具记录的事件序列。content 仍保留聚合文本便于兼容/诊断，
+  // 渲染侧只读 timeline，避免把工具统一挪到正文之后。
+  timeline: MessageTimelineItem[];
   status: AgentStatus;
   isError?: boolean;
 }
@@ -67,7 +77,13 @@ interface UIState {
   startAgentSegment: (sessionId: string, agent: string, runId?: string) => void;
   appendSegmentContent: (sessionId: string, agent: string, runId: string, chunk: string) => void;
   appendSegmentReasoning: (sessionId: string, agent: string, runId: string, chunk: string) => void;
-  pushSegmentToolCall: (sessionId: string, agent: string, runId: string, content: string) => void;
+  pushSegmentToolCall: (
+    sessionId: string,
+    agent: string,
+    runId: string,
+    content: string,
+    options?: TimelineToolOptions,
+  ) => void;
   setSegmentStatus: (sessionId: string, agent: string, runId: string, status: AgentStatus) => void;
   clearStreamingSegments: (sessionId: string) => void;
 }
@@ -101,6 +117,19 @@ function findSegmentIndex(
     }
   }
   return -1;
+}
+
+// 子 agent 首个事件到达时，先结束当前活动顶层段。之后顶层事件会惰性创建
+// continuation 段并排在子 agent 段后，使列表顺序对应 invoke / 子 agent / result
+// 的真实到达顺序；已输出的顶层前缀不会被重写或重排。
+function detachActiveTopLevelSegments(segments: StreamingSegment[], runId: string) {
+  if (!runId) return segments;
+  return segments.map((segment) =>
+    segment.runId === '' &&
+    (segment.status === 'running' || segment.status === 'tool_call')
+      ? { ...segment, status: 'idle' as const }
+      : segment,
+  );
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -149,19 +178,20 @@ export const useUIStore = create<UIState>((set) => ({
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
       if (findSegmentIndex(prev, agent, runId, true) >= 0) return {};
+      const base = detachActiveTopLevelSegments(prev, runId ?? '');
       const seg: StreamingSegment = {
         id: nextSegmentId(),
         agent,
         runId: runId ?? '',
         content: '',
         reasoning: '',
-        toolCalls: [],
+        timeline: [],
         status: 'running',
       };
       return {
         streamingSegments: {
           ...state.streamingSegments,
-          [sessionId]: [...prev, seg],
+          [sessionId]: [...base, seg],
         },
       };
     }),
@@ -174,9 +204,15 @@ export const useUIStore = create<UIState>((set) => ({
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
       const idx = findSegmentIndex(prev, agent, runId, true);
+      const base = idx >= 0 ? prev : detachActiveTopLevelSegments(prev, runId);
       if (idx >= 0) {
         const next = prev.slice();
-        next[idx] = { ...next[idx], content: next[idx].content + chunk };
+        const seg = next[idx];
+        next[idx] = {
+          ...seg,
+          content: seg.content + chunk,
+          timeline: appendTimelineText(seg.timeline, chunk),
+        };
         return { streamingSegments: { ...state.streamingSegments, [sessionId]: next } };
       }
       const created: StreamingSegment = {
@@ -185,11 +221,11 @@ export const useUIStore = create<UIState>((set) => ({
         runId: runId ?? '',
         content: chunk,
         reasoning: '',
-        toolCalls: [],
+        timeline: [{ type: 'text', content: chunk }],
         status: 'running',
       };
       return {
-        streamingSegments: { ...state.streamingSegments, [sessionId]: [...prev, created] },
+        streamingSegments: { ...state.streamingSegments, [sessionId]: [...base, created] },
       };
     });
   },
@@ -200,6 +236,7 @@ export const useUIStore = create<UIState>((set) => ({
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
       const idx = findSegmentIndex(prev, agent, runId, true);
+      const base = idx >= 0 ? prev : detachActiveTopLevelSegments(prev, runId);
       if (idx >= 0) {
         const next = prev.slice();
         next[idx] = { ...next[idx], reasoning: next[idx].reasoning + chunk };
@@ -211,26 +248,51 @@ export const useUIStore = create<UIState>((set) => ({
         runId: runId ?? '',
         content: '',
         reasoning: chunk,
-        toolCalls: [],
+        timeline: [],
         status: 'running',
       };
       return {
-        streamingSegments: { ...state.streamingSegments, [sessionId]: [...prev, created] },
+        streamingSegments: { ...state.streamingSegments, [sessionId]: [...base, created] },
       };
     });
   },
 
-  // tool_call：记入该 (agent, runId) 活动段的 toolCalls 并置 tool_call 状态。无活动段时
-  // 同样惰性建段，避免丢失。
-  pushSegmentToolCall: (sessionId, agent, runId, content) => {
+  // tool_call 作为 timeline 节点记入活动段；tool_result 优先按 tool_call_id 合并回
+  // 该 (agent, runId) 最近一段里的调用卡。若父 agent 段因子 agent 插入而暂时挂起，
+  // 结果仍会更新前缀段中的调用卡，不会在子 agent 后再渲染一张独立结果卡。
+  pushSegmentToolCall: (sessionId, agent, runId, content, options = {}) => {
     if (!content) return;
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
       const idx = findSegmentIndex(prev, agent, runId, true);
+      if (options.kind === 'result') {
+        // 活动段优先；没有活动段时回看同身份最近一段。后者覆盖「子 agent 已把父段
+        // 暂时挂起，父 invoke tool_result 晚于子 agent 到达」的顺序。
+        const targetIdx = idx >= 0 ? idx : findSegmentIndex(prev, agent, runId, false);
+        if (targetIdx >= 0) {
+          const target = prev[targetIdx];
+          const attached = attachTimelineToolResult(
+            target.timeline,
+            content,
+            options.toolCallId,
+          );
+          if (attached.matched) {
+            const next = prev.slice();
+            next[targetIdx] = { ...target, timeline: attached.timeline };
+            return { streamingSegments: { ...state.streamingSegments, [sessionId]: next } };
+          }
+        }
+      }
+
+      const base = idx >= 0 ? prev : detachActiveTopLevelSegments(prev, runId);
       if (idx >= 0) {
         const next = prev.slice();
         const seg = next[idx];
-        next[idx] = { ...seg, toolCalls: [...seg.toolCalls, content], status: 'tool_call' };
+        next[idx] = {
+          ...seg,
+          timeline: appendTimelineTool(seg.timeline, content, options),
+          status: 'tool_call',
+        };
         return { streamingSegments: { ...state.streamingSegments, [sessionId]: next } };
       }
       const created: StreamingSegment = {
@@ -239,11 +301,11 @@ export const useUIStore = create<UIState>((set) => ({
         runId: runId ?? '',
         content: '',
         reasoning: '',
-        toolCalls: [content],
+        timeline: [{ type: 'tool', content, toolCallId: options.toolCallId }],
         status: 'tool_call',
       };
       return {
-        streamingSegments: { ...state.streamingSegments, [sessionId]: [...prev, created] },
+        streamingSegments: { ...state.streamingSegments, [sessionId]: [...base, created] },
       };
     });
   },

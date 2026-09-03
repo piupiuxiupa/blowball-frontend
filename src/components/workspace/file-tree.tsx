@@ -32,6 +32,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { UploadButton } from './upload-button';
+import { PATH_MIME, PATH_TYPE_MIME } from '@/lib/workspace-dnd';
+import { useAttachmentStore } from '@/stores/attachment-store';
 import type { FileEntry, WorkspaceSearchEntry } from '@/lib/api';
 
 // joinPath builds the workspace-relative path for an entry from its parent
@@ -61,8 +63,8 @@ function normalizeCreateName(raw: string): string | null {
   return name;
 }
 
-// HTML5 DnD 携带的路径数据 mime（同时写 text/plain 兜底）。
-const PATH_MIME = 'application/x-blowball-path';
+// 拖拽 mime 常量移至 lib/workspace-dnd：输入区 drop 目标（附加到消息）需与树内
+// 移动共用同一通道，PATH_TYPE_MIME 随行区分 file/dir（见 FileNode.handleDragStart）。
 
 export function FileTree() {
   const { files, isLoading, error } = useWorkspace();
@@ -281,46 +283,50 @@ function SearchResults({ query }: { query: string }) {
 }
 
 // 单条搜索结果：文件行点击经 selectFile 打开（带 dirty 拦截）；目录行仅展示
-// （活动文件只能是文件，树内也不支持定位展开，故不做点击行为）。
+// （活动文件只能是文件，树内也不支持定位展开，故不做点击行为）。行尾 hover 出现
+// 「+ 附加到消息」按钮（message-context-mentions）——外层包 relative group 容器，
+// 避免 button 嵌套 button。
 function SearchRow({ entry }: { entry: WorkspaceSearchEntry }) {
   const isDir = entry.type === 'dir';
   const { activeFilePath } = useUIStore();
   const parent = dirname(entry.path);
   const isActive = !isDir && activeFilePath === entry.path;
-  const icon = isDir ? (
-    <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
-  ) : (
-    <File className="h-4 w-4 shrink-0 text-muted-foreground" />
-  );
-
-  const content = (
-    <>
-      {icon}
-      <span className="truncate">{entry.name}</span>
-      {parent && (
-        <span className="ml-auto max-w-[45%] shrink-0 truncate text-[11px] text-muted-foreground">
-          {parent}
-        </span>
-      )}
-    </>
-  );
-
-  if (isDir) {
-    return <div className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm opacity-70">{content}</div>;
-  }
 
   return (
-    <button
-      onClick={() => selectFile(entry.path)}
-      className={cn(
-        'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-all',
-        isActive
-          ? 'bg-accent text-accent-foreground shadow-[inset_0_0_0_1px_rgba(255,159,10,0.35)]'
-          : 'hover:bg-foreground/[0.05]'
-      )}
-    >
-      {content}
-    </button>
+    <div className="group relative flex items-center">
+      <button
+        type="button"
+        onClick={isDir ? undefined : () => selectFile(entry.path)}
+        className={cn(
+          'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 pr-8 text-left text-sm transition-all',
+          isDir ? 'opacity-70' : isActive ? 'bg-accent text-accent-foreground shadow-[inset_0_0_0_1px_rgba(255,159,10,0.35)]' : 'hover:bg-foreground/[0.05]'
+        )}
+      >
+        {isDir ? (
+          <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+        ) : (
+          <File className="h-4 w-4 shrink-0 text-muted-foreground" />
+        )}
+        <span className="truncate">{entry.name}</span>
+        {parent && (
+          <span className="ml-auto max-w-[45%] shrink-0 truncate text-[11px] text-muted-foreground">
+            {parent}
+          </span>
+        )}
+      </button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="absolute right-0.5 top-1/2 h-6 w-6 -translate-y-1/2 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 group-hover:opacity-100"
+        onClick={() =>
+          useAttachmentStore.getState().addItem({ kind: isDir ? 'dir' : 'file', path: entry.path })
+        }
+        title="附加到消息"
+        aria-label={`附加 ${entry.name} 到消息`}
+      >
+        <Plus className="h-3.5 w-3.5" />
+      </Button>
+    </div>
   );
 }
 
@@ -402,9 +408,11 @@ function FileNode({ entry, parentPath }: { entry: FileEntry; parentPath: string 
     void submitRename(e.target.value);
   };
 
-  // 拖拽源：拖起节点（文件/目录），把全路径写入 dataTransfer。
+  // 拖拽源：拖起节点（文件/目录），把全路径写入 dataTransfer；PATH_TYPE_MIME 随行
+  // 携带类型，供输入区 drop 时生成正确的附加 kind（树内移动只读 PATH_MIME，不受影响）。
   const handleDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData(PATH_MIME, fullPath);
+    e.dataTransfer.setData(PATH_TYPE_MIME, isDir ? 'dir' : 'file');
     e.dataTransfer.setData('text/plain', fullPath);
     e.dataTransfer.effectAllowed = 'move';
   };
@@ -430,8 +438,26 @@ function FileNode({ entry, parentPath }: { entry: FileEntry; parentPath: string 
     await moveNode(src, joinPath(fullPath, basename(src)));
   };
 
+  // 附加到消息（message-context-mentions）：hover 出现的「+」按钮，与行点击（打开
+  // 预览）互不影响——stopPropagation 防止触发行的展开/选中。
+  const handleAttach = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    useAttachmentStore.getState().addItem({ kind: isDir ? 'dir' : 'file', path: fullPath });
+  };
+
   const actionButtons = !isEditing && (
     <>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="absolute right-14 top-1/2 h-6 w-6 -translate-y-1/2 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 group-hover:opacity-100"
+        onClick={handleAttach}
+        title={isDir ? '附加目录到消息' : '附加文件到消息'}
+        aria-label={`${isDir ? '附加目录' : '附加文件'} ${entry.name} 到消息`}
+      >
+        <Plus className="h-3.5 w-3.5" />
+      </Button>
+
       <Button
         variant="ghost"
         size="icon"
@@ -493,7 +519,7 @@ function FileNode({ entry, parentPath }: { entry: FileEntry; parentPath: string 
           <button
             onClick={() => !isEditing && setExpanded(!expanded)}
             disabled={isDeleting || isEditing}
-            className="flex w-full items-center gap-1 rounded-lg px-2 py-1.5 pr-14 text-left text-sm transition-all hover:bg-foreground/[0.05]"
+            className="flex w-full items-center gap-1 rounded-lg px-2 py-1.5 pr-20 text-left text-sm transition-all hover:bg-foreground/[0.05]"
           >
             {expanded ? (
               <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -529,7 +555,7 @@ function FileNode({ entry, parentPath }: { entry: FileEntry; parentPath: string 
         onClick={() => selectFile(fullPath)}
         disabled={isDeleting || isEditing}
         className={cn(
-          'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 pr-14 text-left text-sm transition-all',
+          'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 pr-20 text-left text-sm transition-all',
           isActive
             ? 'bg-accent text-accent-foreground shadow-[inset_0_0_0_1px_rgba(255,159,10,0.35)]'
             : 'hover:bg-foreground/[0.05]',

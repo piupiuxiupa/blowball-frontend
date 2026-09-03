@@ -33,14 +33,13 @@ function runIdOf(payload: StreamEvent): string {
   return typeof id === 'string' ? id : '';
 }
 
-// 流缓冲键：agent 与 runId 的复合（agent 名不含空格（Confucius/Chongzhi/Liang/user），
-// 按首个空格拆回即可）。
-function bufferKey(agent: string, runId: string): string {
-  return `${agent} ${runId}`;
-}
-function splitBufferKey(key: string): { agent: string; runId: string } {
-  const i = key.indexOf(' ');
-  return { agent: key.slice(0, i), runId: key.slice(i + 1) };
+// rAF 节流保留到达顺序：同一路连续 token/reasoning 可合并，但不同类型或不同 agent
+// 的事件不按 key 分桶重排。工具事件前会同步 flush，保证工具卡落在其前的正文之后。
+interface BufferedStreamEvent {
+  kind: 'token' | 'reasoning';
+  agent: string;
+  runId: string;
+  content: string;
 }
 
 // 每会话最后收到的 SSE 帧 id（后端 run 事件日志的 entry id）。刻意放在模块级非响应式
@@ -93,14 +92,12 @@ export async function consumeTurnStream(
   const { startAgentSegment, appendSegmentContent, appendSegmentReasoning, pushSegmentToolCall, setSegmentStatus, setTurnRun } =
     useUIStore.getState();
 
-  // 流式 token 本地缓冲 + rAF 节流：token / reasoning 先累积进缓冲，
-  // 每个动画帧最多 flush 一次到 store，把渲染频率压到 ≤60fps。
-  // 缓冲按 (agent, runId) 复合键分桶：flush 时把每路的串追加到其活动段——
-  // 并行/交错的同名子 agent 调用（runId 不同）不会串段；串行回合下退化为单条目。
+  // 流式 token 本地缓冲 + rAF 节流：token / reasoning 先按到达顺序累积进缓冲，
+  // 每个动画帧最多 flush 一次到 store，把渲染频率压到 ≤60fps。相邻的同类型同路
+  // 事件会合并；并行/交错的子 agent 调用（runId 不同）不会串段。
   // 收尾事件（done / agent_error / 异常 / abort）会同步 flush 剩余缓冲，
   // 避免丢失尾部 token；取消时也确保 rAF 句柄被回收，防止泄漏。
-  let tokenBuffers: Record<string, string> = {};
-  let reasoningBuffers: Record<string, string> = {};
+  let bufferedEvents: BufferedStreamEvent[] = [];
   let rafId: number | null = null;
 
   // 回收待执行的 rAF 句柄，避免流结束后残留回调写入状态。
@@ -113,19 +110,32 @@ export async function consumeTurnStream(
 
   const flush = () => {
     cancelPendingFlush();
-    // 取出并重置缓冲（闭包绑定，后续 token 写入新对象），再按复合键追加到活动段。
-    const tokens = tokenBuffers;
-    const reasoning = reasoningBuffers;
-    tokenBuffers = {};
-    reasoningBuffers = {};
-    for (const key in tokens) {
-      const { agent, runId } = splitBufferKey(key);
-      if (tokens[key]) appendSegmentContent(sessionId, agent, runId, tokens[key]);
+    // 取出并重置缓冲（闭包绑定，后续 token 写入新数组），再按事件顺序写入对应段。
+    const events = bufferedEvents;
+    bufferedEvents = [];
+    for (const event of events) {
+      if (event.kind === 'token') {
+        appendSegmentContent(sessionId, event.agent, event.runId, event.content);
+      } else {
+        appendSegmentReasoning(sessionId, event.agent, event.runId, event.content);
+      }
     }
-    for (const key in reasoning) {
-      const { agent, runId } = splitBufferKey(key);
-      if (reasoning[key]) appendSegmentReasoning(sessionId, agent, runId, reasoning[key]);
+  };
+
+  const bufferEvent = (
+    kind: BufferedStreamEvent['kind'],
+    agent: string,
+    runId: string,
+    chunk: string,
+  ) => {
+    // 只合并真正的相邻同路同类型事件；一旦中间出现其他事件，就保留为独立节点，
+    // 避免“token A → reasoning A → token A”被合并成 token → reasoning 的倒序。
+    const last = bufferedEvents[bufferedEvents.length - 1];
+    if (last && last.kind === kind && last.agent === agent && last.runId === runId) {
+      last.content += chunk;
+      return;
     }
+    bufferedEvents.push({ kind, agent, runId, content: chunk });
   };
 
   const scheduleFlush = () => {
@@ -163,17 +173,15 @@ export async function consumeTurnStream(
         case 'token': {
           // 按 (agent, runId) 累积进缓冲，下一帧 flush 时追加到对应活动段。
           // 若 token 先于 agent_start 到达，appendSegmentContent 会按复合键惰性建段。
-          const key = bufferKey(payload.agent, runIdOf(payload));
           if (payload.content) {
-            tokenBuffers[key] = (tokenBuffers[key] ?? '') + payload.content;
+            bufferEvent('token', payload.agent, runIdOf(payload), payload.content);
             scheduleFlush();
           }
           break;
         }
         case 'reasoning': {
-          const key = bufferKey(payload.agent, runIdOf(payload));
           if (payload.content) {
-            reasoningBuffers[key] = (reasoningBuffers[key] ?? '') + payload.content;
+            bufferEvent('reasoning', payload.agent, runIdOf(payload), payload.content);
             scheduleFlush();
           }
           break;
@@ -183,20 +191,39 @@ export async function consumeTurnStream(
           // {"tool_call_id","name","args"} JSON（后端 event_mapper.go 同此格式），否则
           // parseToolCall 拿不到参数，表现为流式期间「无参数」。
           const meta = payload.meta ?? {};
+          const toolCallId =
+            typeof meta.tool_call_id === 'string' ? meta.tool_call_id : '';
           const record = JSON.stringify({
-            tool_call_id: typeof meta.tool_call_id === 'string' ? meta.tool_call_id : '',
+            tool_call_id: toolCallId,
             name: payload.content ?? '',
             args: meta.args ?? {},
           });
-          pushSegmentToolCall(sessionId, payload.agent, runIdOf(payload), record);
+          flush();
+          pushSegmentToolCall(sessionId, payload.agent, runIdOf(payload), record, {
+            kind: 'call',
+            toolCallId,
+          });
           break;
         }
         case 'tool_result': {
           // SSE 的 tool_result（见 openapi SSEToolResult）：content 即工具结果的状态信封
           // JSON 串——registry 工具为 {"status":0,"result":...} / {"status":1,"error":...}，
-          // invoke_* 子 agent 分发为子 agent 输出原文。直接并入活动段 toolCalls，由
-          // ToolCallBubble.parseToolCall 识别为「工具结果」，并在 status===1 时整卡标红。
-          pushSegmentToolCall(sessionId, payload.agent, runIdOf(payload), payload.content ?? '');
+          // invoke_* 子 agent 分发为子 agent 输出原文。先落完缓冲正文，再把结果作为
+          // 结果按 tool_call_id 合并回对应调用卡，避免 rAF 延迟导致顺序颠倒。
+          flush();
+          pushSegmentToolCall(
+            sessionId,
+            payload.agent,
+            runIdOf(payload),
+            payload.content ?? '',
+            {
+              kind: 'result',
+              toolCallId:
+                typeof payload.meta?.tool_call_id === 'string'
+                  ? payload.meta.tool_call_id
+                  : undefined,
+            },
+          );
           break;
         }
         case 'agent_end':

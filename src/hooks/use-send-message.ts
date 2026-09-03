@@ -5,6 +5,7 @@ import { consumeTurnStream, reconcileTurnHistory, clearTurnStreamState } from '@
 import { attachToRun } from '@/hooks/use-turn-lifecycle';
 import { useAuthStore } from '@/stores/auth-store';
 import { useUIStore } from '@/stores/ui-store';
+import type { AttachmentItem, QuotedReference } from '@/lib/additional-context';
 import type { SendMessageRequest, SessionMessagesResponse, Message, ReasoningEffort } from '@/lib/api';
 
 // 发送路径：建立流（POST /messages）+ 乐观用户消息 + 收尾 reconcile。
@@ -45,6 +46,11 @@ export function useSendMessage() {
     }: {
       sessionId: string;
       content: string;
+      // message-context-mentions：提交时的正文、附件与划词引用快照（content 是序列化
+      // 后的全量文本，不能回灌 textarea）——请求级失败时输入区据快照恢复正文与 chips。
+      text: string;
+      items: AttachmentItem[];
+      references: QuotedReference[];
       // per-request-model:可选的模型目录选择与思考等级;缺省不发参数,由后端按
       // agents.<name>.model 配置与目录条目派生。
       model?: string;

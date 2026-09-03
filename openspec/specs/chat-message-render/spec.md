@@ -55,15 +55,29 @@
 - **THEN** 流式尾部内容被渲染并随输出自动滚动到底，行为与非虚拟化时一致
 
 ### Requirement: 按 agent 差异化渲染助手消息
-系统 SHALL 按消息所属 agent 名采用不同渲染形态：Confucius（主编排 agent）的输出以全宽裸 Markdown 渲染，不套用消息气泡、头像与名字标签；子 agent（Chongzhi、Liang）的输出按调用身份（(agent, run_id) 复合键）各自渲染为独立气泡并默认折叠——并发同名子 agent 调用的交错行按各自 run id 归组，不拼入同一气泡。该规则对持久化消息与流式段统一生效。
+系统 SHALL 按消息所属 agent 名采用不同渲染形态：Confucius（主编排 agent）的输出以全宽裸 Markdown 渲染，不套用消息气泡、头像与名字标签；子 agent（Chongzhi、Liang）的输出按调用身份（(agent, run_id) 复合键）各自渲染为独立气泡并默认折叠——并发同名子 agent 调用的交错行按各自 run id 归组，不拼入同一气泡。每个 agent 范围内的正文片段与工具调用 SHALL 按事件到达顺序内联渲染，不得把工具记录统一汇总到正文之后；tool_result SHALL 按 tool_call_id 合并到对应工具调用卡内，而不是渲染为独立结果卡。该规则对持久化消息与流式段统一生效。
+
+子 agent 气泡在全局消息流中的位置 SHALL 跟随其父 invoke tool_call 的到达顺序：父 agent 在子 agent 开始前输出的内容位于子 agent 气泡之前；子 agent 结束后父 agent 继续输出的内容位于该气泡之后，不得因为按 agent 归组而把子 agent 气泡整体挪到父 agent 完整消息末尾。
 
 #### Scenario: Confucius 输出裸 Markdown
 - **WHEN** 渲染 agent 为 Confucius 的助手消息（持久化或流式）
 - **THEN** 其正文以全宽 Markdown 直接渲染，不渲染气泡背景、头像与名字标签
 
-#### Scenario: Confucius 的 tool_call 仍以气泡显示
-- **WHEN** Confucius 的消息携带 tool_call
-- **THEN** 这些 tool_call 以内联气泡形式显示在其裸 Markdown 输出中
+#### Scenario: 顶层工具记录与正文按顺序内联
+- **WHEN** Confucius 依次输出正文 A、tool_call、正文 B 与 tool_result
+- **THEN** 渲染顺序为正文 A、携带结果的工具调用卡、正文 B；参数与结果在同一张卡内展开查看，不出现独立的工具结果卡，也不出现把工具记录汇总到全部正文之后的折叠组
+
+#### Scenario: 子 agent 工具记录不逃出自身调用
+- **WHEN** 一个子 agent 调用内依次输出正文、tool_call、tool_result 与后续正文，同时顶层或其他子 agent 也有交错事件
+- **THEN** 该子 agent 的正文与携带结果的工具调用卡仍全部渲染在其 (agent, run_id) 对应气泡内，且正文与工具调用节点保持上述顺序
+
+#### Scenario: 子 agent 气泡按父工具调用位置插入
+- **WHEN** Confucius 依次输出正文 A、invoke tool_call、子 agent 完整输出、tool_result 与正文 B
+- **THEN** 全局渲染顺序为正文 A、携带结果的 invoke 工具卡、子 agent 气泡、正文 B；正文 B 不得被合并回正文 A 所在块从而导致子 agent 气泡显示在正文 B 之后
+
+#### Scenario: 出错工具结果按原位标红
+- **WHEN** tool_result 的 status === 1
+- **THEN** 对应工具调用卡在原调用位置标红并展示失败结果，不改变该调用卡与其他正文 / 工具节点的相对顺序
 
 #### Scenario: 子 agent 每次调用各自独立气泡
 - **WHEN** 渲染 agent 为 Chongzhi 或 Liang 的助手消息
@@ -83,7 +97,7 @@
 
 #### Scenario: 展开显示完整内容
 - **WHEN** 用户展开一个子 agent 气泡
-- **THEN** 气泡内显示该 agent 的完整 Markdown 正文、思考过程与 tool_call
+- **THEN** 气泡内显示该 agent 的完整思考过程，以及按事件顺序交替排列的 Markdown 正文与工具记录
 
 #### Scenario: 状态指示随生命周期变化
 - **WHEN** 子 agent 气泡的状态在 running / tool_call / idle / error 间变化

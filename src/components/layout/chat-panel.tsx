@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { Wrench, Sparkles } from 'lucide-react';
 import { DRAFT_SESSION_ID, useUIStore } from '@/stores/ui-store';
 import { useMcpTools, useSkills } from '@/hooks/use-catalogue';
@@ -5,9 +6,11 @@ import { useAttachRun } from '@/hooks/use-turn-lifecycle';
 import { MessageList } from '@/components/chat/message-list';
 import { MessageInput } from '@/components/chat/message-input';
 import { CatalogueButton } from '@/components/chat/catalogue-button';
+import { SelectionQuoteButton } from '@/components/chat/selection-quote-button';
 
 export function ChatPanel() {
   const activeSessionId = useUIStore((s) => s.activeSessionId);
+  const messageAreaRef = useRef<HTMLDivElement>(null);
   // 打开 generating 会话时自动 attach 运行中 turn（turn-detach-resume：reload 后的
   // run id 发现路径是会话列表项）。挂在聊天面板——它随活动会话驱动整个消息区。
   useAttachRun();
@@ -79,7 +82,7 @@ export function ChatPanel() {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div ref={messageAreaRef} className="flex-1 min-h-0 overflow-hidden">
         {/* 草稿态（lazy-session-creation）：未落库、永远没有消息——直接渲染空态文案，
             不挂 MessageList（历史查询本就按哨兵排除）；首条消息发出后活动会话已切到
             真实 id，自然过渡到列表渲染。 */}
@@ -94,6 +97,7 @@ export function ChatPanel() {
             选择一个会话开始聊天
           </div>
         )}
+        {activeSessionId && <SelectionQuoteButton containerRef={messageAreaRef} />}
       </div>
 
       <div className="border-t border-white/50 p-3">

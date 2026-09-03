@@ -1,22 +1,35 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useMessages } from '@/hooks/use-messages';
 import { useUIStore, type StreamingSegment } from '@/stores/ui-store';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
+import {
+  attachTimelineToolResult,
+  type MessageTimelineItem,
+} from '@/lib/message-timeline';
+import { parseAdditionalContext } from '@/lib/additional-context';
 import { ChatMessage } from './chat-message';
 import { AgentMessage } from './agent-message';
+import {
+  MessageNavigationRail,
+  type UserMessageAnchor,
+} from './message-navigation-rail';
 import type { Message } from '@/lib/api';
 
 interface MessageBlock {
   id: string;
   agent: string;
+  runId: string;
   role: 'user' | 'assistant';
+  /** 会话级 turn 序号（1-based）：每条用户消息开启一个 turn，其后续回复继承该值。 */
+  turn: number;
   content: string;
   reasoning?: string;
-  toolCalls: string[];
+  timeline: MessageTimelineItem[];
   isError?: boolean;
+  msgTime?: string;
 }
 
 // 虚拟列表的单个条目：已完成消息块，或流式中的某个 agent 段（尾部按段映射为 N 个 item）。
@@ -37,18 +50,30 @@ function blockKey(agent: string, runId: string): string {
 
 function groupMessages(messages: Message[]): MessageBlock[] {
   const blocks: MessageBlock[] = [];
+  let turn = 0;
   // 打开中的块按 (agent, run_id) 复合键索引：交错到达的多个 run 同时各挂一块，
   // agent_end 只关闭自己那个 run 的块；块在打开时即占位（展示顺序 = 开块顺序，
   // 与流式分段的追加顺序一致）。
   const open = new Map<string, MessageBlock>();
 
   const openBlock = (msg: Message): MessageBlock => {
+    // 子 agent 的第一个事件（通常是 agent_start，且刚跟在父 invoke tool_call 后）
+    // 到达时，先暂时挂起顶层块。后续顶层 token/tool_result 会惰性开一个新的
+    // continuation 块并追加在子 agent 块之后，从而恢复“invoke → 子 agent → result”
+    // 的全局顺序，而不是把子 agent 整体挤到父 agent 完整消息之后。
+    if (messageRunId(msg) !== '') {
+      for (const key of open.keys()) {
+        if (key.endsWith(' ')) open.delete(key);
+      }
+    }
     const block: MessageBlock = {
       id: `agent-${msg.id}`,
       agent: msg.agent,
+      runId: messageRunId(msg),
       role: 'assistant',
+      turn,
       content: '',
-      toolCalls: [],
+      timeline: [],
     };
     blocks.push(block);
     open.set(blockKey(msg.agent, messageRunId(msg)), block);
@@ -57,15 +82,31 @@ function groupMessages(messages: Message[]): MessageBlock[] {
   const blockFor = (msg: Message): MessageBlock | undefined =>
     open.get(blockKey(msg.agent, messageRunId(msg)));
 
+  // 历史分组在本次 useMemo 内新建并填充 block，尚未交给 React state；
+  // 这里可以安全地原地合并相邻 token，避免每个 token 都复制 timeline 数组。
+  const appendBlockText = (block: MessageBlock, chunk: string) => {
+    if (!chunk) return;
+    const last = block.timeline[block.timeline.length - 1];
+    if (last?.type === 'text') {
+      last.content += chunk;
+    } else {
+      block.timeline.push({ type: 'text', content: chunk });
+    }
+  };
+
   for (const msg of messages) {
     if (msg.role === 'user') {
       open.clear();
+      turn += 1;
       blocks.push({
         id: `user-${msg.id}`,
         agent: 'user',
+        runId: '',
         role: 'user',
+        turn,
         content: msg.content,
-        toolCalls: [],
+        timeline: [],
+        msgTime: msg.msg_time,
       });
       continue;
     }
@@ -87,6 +128,7 @@ function groupMessages(messages: Message[]): MessageBlock[] {
       if (current) {
         current.isError = true;
         current.content += `\n\n[错误] ${msg.content}`;
+        appendBlockText(current, `\n\n[错误] ${msg.content}`);
         // 不关闭块：对齐流式 setSegmentStatus（仅置 error，不结束段）。工具失败时后端
         // 会紧跟一条 tool_result（见 openapi SSEToolResult），若此处关闭块，
         // 该 tool_result 会因无块挂载而丢失，历史里就看不到标红的工具结果气泡。
@@ -95,9 +137,11 @@ function groupMessages(messages: Message[]): MessageBlock[] {
         blocks.push({
           id: `error-${msg.id}`,
           agent: msg.agent,
+          runId: messageRunId(msg),
           role: 'assistant',
+          turn,
           content: `[错误] ${msg.content}`,
-          toolCalls: [],
+          timeline: [{ type: 'text', content: `[错误] ${msg.content}` }],
           isError: true,
         });
       }
@@ -105,18 +149,35 @@ function groupMessages(messages: Message[]): MessageBlock[] {
     }
 
     // tool_call = 工具调用（{tool_call_id,name,args}）；tool_result = 工具执行结果
-    // （{tool_call_id,output:{result,status}}）。两者都作为独立气泡并入 toolCalls，
-    // 由 ToolCallBubble.parseToolCall 区分形态，结果型在 output.status===1 时整卡标红。
+    // （{tool_call_id,output:{result,status}}）。调用作为 timeline 节点插到当前位置，
+    // 结果按 tool_call_id 合并回对应调用卡；无匹配键时才退化为独立结果卡。
     if (msg.event_type === 'tool_call' || msg.event_type === 'tool_result') {
-      const current = blockFor(msg);
+      let current = blockFor(msg);
+      if (!current && msg.event_type === 'tool_result') {
+        // 子 agent 可能已把父块暂时挂起；结果仍应回填到同身份最近的父块中。
+        current = [...blocks]
+          .reverse()
+          .find((block) => block.agent === msg.agent && block.runId === messageRunId(msg));
+      }
       if (current) {
-        current.toolCalls.push(msg.content);
+        if (msg.event_type === 'tool_call') {
+          current.timeline.push({ type: 'tool', content: msg.content });
+        } else {
+          const attached = attachTimelineToolResult(current.timeline, msg.content);
+          if (attached.matched) {
+            current.timeline = attached.timeline;
+          } else {
+            current.timeline.push({ type: 'tool', content: msg.content });
+          }
+        }
       }
       continue;
     }
 
     if (msg.event_type === 'token') {
-      (blockFor(msg) ?? openBlock(msg)).content += msg.content;
+      const current = blockFor(msg) ?? openBlock(msg);
+      current.content += msg.content;
+      appendBlockText(current, msg.content);
       continue;
     }
 
@@ -135,9 +196,12 @@ function signatureOf(block: MessageBlock): string {
   return [
     block.role,
     block.agent,
+    block.turn,
     block.content,
     block.reasoning ?? '',
-    block.toolCalls.join('\n'),
+    block.timeline
+      .map((item) => `${item.type}:${item.content}:${item.type === 'tool' ? item.result ?? '' : ''}`)
+      .join('\n'),
     block.isError ? '1' : '0',
   ].join(' ');
 }
@@ -180,19 +244,43 @@ function isBareConfuciusItem(item: ListItem): boolean {
 
 const SCROLL_THRESHOLD = 80;
 
+function userMessagePreview(content: string): string {
+  // 附加上下文 XML 对导航没有信息量，预览只展示用户真正输入的正文。
+  const parsed = parseAdditionalContext(content);
+  const text = (parsed?.rest ?? content).replace(/\s+/g, ' ').trim();
+  return text || '（附加上下文消息）';
+}
+
 export function MessageList() {
   const activeSessionId = useUIStore((s) => s.activeSessionId);
   const { data, isLoading } = useMessages(activeSessionId);
   const streamingSegments = useUIStore((s) =>
     activeSessionId ? s.streamingSegments[activeSessionId] ?? EMPTY_SEGMENTS : EMPTY_SEGMENTS
   );
+  const activeTurnRunId = useUIStore((s) =>
+    activeSessionId ? s.turnRuns[activeSessionId] ?? null : null
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
   const scrollRafRef = useRef<number | null>(null);
   const blockCacheRef = useRef<Map<string, CachedBlock>>(new Map());
   const cachedSessionRef = useRef<string | null>(activeSessionId);
+  const navigationHighlightTimerRef = useRef<number | null>(null);
+  const [activeUserIndex, setActiveUserIndex] = useState(-1);
+  const [highlightedUserBlockId, setHighlightedUserBlockId] = useState<string | null>(null);
 
-  const messages = data?.messages ?? [];
+  const allMessages = data?.messages ?? [];
+  // 写库是流式的：重进/重挂载会话时，React Query 可能拉到当前 turn 已落库的半截
+  // assistant 行；同时 attach/SSE 又会重放或继续输出同一 turn。这里按 trace_id 隐藏
+  // 活跃 turn 的已持久化行，只保留 streamingSegments 中的一份，终局 reconcile 清空
+  // 分段后再由完整历史接管。用户消息不过滤，避免乐观用户消息与真实用户消息互相顶替。
+  const messages = useMemo(
+    () =>
+      activeTurnRunId
+        ? allMessages.filter((msg) => msg.role === 'user' || msg.trace_id !== activeTurnRunId)
+        : allMessages,
+    [allMessages, activeTurnRunId],
+  );
   const blocks = useMemo(() => {
     // 会话切换时清空缓存，避免跨会话复用块对象引用。
     if (cachedSessionRef.current !== activeSessionId) {
@@ -218,12 +306,80 @@ export function MessageList() {
     [blocks, streamingSegments]
   );
 
+  // 导航轨道只索引用户回合；itemIndex 保留其在虚拟列表中的真实位置，
+  // turnIndex 则是轨道上的均匀刻度序号。
+  const userAnchors = useMemo<UserMessageAnchor[]>(() => {
+    let turnIndex = 0;
+    return blocks.flatMap((block, itemIndex) => {
+      if (block.role !== 'user') return [];
+      const anchor: UserMessageAnchor = {
+        id: block.id,
+        itemIndex,
+        turnIndex,
+        preview: userMessagePreview(block.content),
+        msgTime: block.msgTime,
+      };
+      turnIndex += 1;
+      return [anchor];
+    });
+    // 依赖 blocks 而非 items：流式 token 只更新尾部 segments，不应让用户锚点数组
+    // 每 帧 重建，否则当前刻度计算会在每次节流渲染后重复执行。
+  }, [blocks]);
+
   const rowVirtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 80,
     overscan: 4,
   });
+
+  const getNearestUserAnchorIndex = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || userAnchors.length === 0) return -1;
+
+    // Codex 轨道同样以视口 40% 线作为“当前回合”判据：用户通常在顶部保留上文、
+    // 底部阅读新回复，40% 比纯顶边更接近实际阅读位置。
+    const cursor = el.scrollTop + el.clientHeight * 0.4;
+    let nearest = 0;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const anchor of userAnchors) {
+      const offset = rowVirtualizer.getOffsetForIndex(anchor.itemIndex, 'start')?.[0];
+      if (offset == null) continue;
+      const distance = Math.abs(offset - cursor);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = anchor.turnIndex;
+      }
+    }
+    return nearest;
+  }, [rowVirtualizer, userAnchors]);
+
+  const clearNavigationHighlight = useCallback(() => {
+    if (navigationHighlightTimerRef.current != null) {
+      window.clearTimeout(navigationHighlightTimerRef.current);
+      navigationHighlightTimerRef.current = null;
+    }
+    setHighlightedUserBlockId(null);
+  }, []);
+
+  // 会话切换时导航状态不能跨线程残留；定时器也随之释放。
+  useEffect(() => {
+    clearNavigationHighlight();
+    setActiveUserIndex(-1);
+    return () => {
+      if (navigationHighlightTimerRef.current != null) {
+        window.clearTimeout(navigationHighlightTimerRef.current);
+        navigationHighlightTimerRef.current = null;
+      }
+    };
+  }, [activeSessionId, clearNavigationHighlight]);
+
+  useEffect(() => {
+    setActiveUserIndex((current) => {
+      const next = getNearestUserAnchorIndex();
+      return current === next ? current : next;
+    });
+  }, [getNearestUserAnchorIndex]);
 
   const scheduleScrollToBottom = () => {
     if (scrollRafRef.current != null) return; // 已在贴底中，合并重复调度
@@ -251,6 +407,8 @@ export function MessageList() {
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     isNearBottomRef.current = distanceFromBottom <= SCROLL_THRESHOLD;
+    const nextActiveUserIndex = getNearestUserAnchorIndex();
+    setActiveUserIndex((current) => (current === nextActiveUserIndex ? current : nextActiveUserIndex));
   };
 
   // 卸载时清空块缓存，释放对块对象的引用。
@@ -295,63 +453,124 @@ export function MessageList() {
     };
   }, [isStreaming]);
 
+  const handleSelectUserAnchor = (anchor: UserMessageAnchor) => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const virtualRow = rowVirtualizer
+      .getVirtualItems()
+      .find((row) => row.index === anchor.itemIndex);
+    const fullyVisible =
+      virtualRow != null &&
+      virtualRow.start >= el.scrollTop &&
+      virtualRow.end <= el.scrollTop + el.clientHeight;
+    if (!fullyVisible) {
+      // 手动跳到历史位置视为离开底部，避免流式跟随逻辑把目标行重新拉回尾部。
+      isNearBottomRef.current = false;
+      rowVirtualizer.scrollToIndex(anchor.itemIndex, {
+        align: 'center',
+        behavior: 'auto',
+      });
+    }
+    setActiveUserIndex(anchor.turnIndex);
+
+    if (navigationHighlightTimerRef.current != null) {
+      window.clearTimeout(navigationHighlightTimerRef.current);
+    }
+    setHighlightedUserBlockId(anchor.id);
+    navigationHighlightTimerRef.current = window.setTimeout(() => {
+      navigationHighlightTimerRef.current = null;
+      setHighlightedUserBlockId(null);
+    }, 1800);
+  };
+
   return (
-    <ScrollArea ref={scrollRef} onScroll={handleScroll} className="h-full px-4 py-4">
-      {isLoading ? (
-        <div className="space-y-4">
-          <Skeleton className="h-16 w-3/4" />
-          <Skeleton className="h-16 w-2/3" />
-        </div>
-      ) : items.length === 0 ? (
-        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-          发送第一条消息开始对话
-        </div>
-      ) : (
-        <div
-          style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative', width: '100%' }}
-        >
-          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-            const item = items[virtualRow.index];
-            // 相邻裸 Confucius 块收紧上边距，使其读作一篇连贯文本（design D4）。
-            const tightTop =
-              virtualRow.index > 0 &&
-              isBareConfuciusItem(item) &&
-              isBareConfuciusItem(items[virtualRow.index - 1]);
-            return (
-              <div
-                key={item.kind === 'block' ? item.block.id : item.segment.id}
-                data-index={virtualRow.index}
-                ref={rowVirtualizer.measureElement}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  transform: `translateY(${virtualRow.start}px)`,
-                }}
-              >
-                <div className={cn(tightTop ? 'pb-2 pt-0' : 'py-2')}>
-                  {item.kind === 'block' ? (
-                    <ChatMessage block={item.block} />
-                  ) : (
-                    <AgentMessage
-                      agent={item.segment.agent}
-                      role="assistant"
-                      content={item.segment.content}
-                      reasoning={item.segment.reasoning}
-                      toolCalls={item.segment.toolCalls}
-                      status={item.segment.status}
-                      isLive={
-                        item.segment.status === 'running' || item.segment.status === 'tool_call'
-                      }
-                    />
-                  )}
+    <div className="relative h-full">
+      <ScrollArea
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className={cn(
+          'h-full py-4 pr-4',
+          !isLoading && userAnchors.length >= 2 ? 'pl-[46px]' : 'pl-4'
+        )}
+      >
+        {isLoading ? (
+          <div className="space-y-4">
+            <Skeleton className="h-16 w-3/4" />
+            <Skeleton className="h-16 w-2/3" />
+          </div>
+        ) : items.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            发送第一条消息开始对话
+          </div>
+        ) : (
+          <div
+            style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative', width: '100%' }}
+          >
+	            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+	              const item = items[virtualRow.index];
+              // 相邻裸 Confucius 块收紧上边距，使其读作一篇连贯文本（design D4）。
+	              const tightTop =
+	                virtualRow.index > 0 &&
+	                isBareConfuciusItem(item) &&
+	                isBareConfuciusItem(items[virtualRow.index - 1]);
+	              const quotedRole =
+	                item.kind === 'block' && item.block.role === 'user' ? 'user' : 'agent';
+	              return (
+	                <div
+	                  key={item.kind === 'block' ? item.block.id : item.segment.id}
+	                  data-index={virtualRow.index}
+	                  data-quoted-context=""
+	                  data-quote-turn={
+	                    item.kind === 'block'
+	                      ? item.block.turn
+	                      : (blocks[blocks.length - 1]?.turn ?? 1)
+	                  }
+	                  data-quote-role={quotedRole}
+                  ref={rowVirtualizer.measureElement}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                >
+                  <div className={cn(tightTop ? 'pb-2 pt-0' : 'py-2')}>
+                    {item.kind === 'block' ? (
+                      <ChatMessage
+                        block={item.block}
+                        navigationHighlighted={
+                          item.block.role === 'user' && item.block.id === highlightedUserBlockId
+                        }
+                      />
+                    ) : (
+                      <AgentMessage
+                        agent={item.segment.agent}
+                        role="assistant"
+                        content={item.segment.content}
+                        reasoning={item.segment.reasoning}
+                        timeline={item.segment.timeline}
+                        status={item.segment.status}
+                        isLive={
+                          item.segment.status === 'running' || item.segment.status === 'tool_call'
+                        }
+                      />
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </ScrollArea>
+              );
+            })}
+          </div>
+        )}
+      </ScrollArea>
+      <MessageNavigationRail
+        key={activeSessionId ?? 'no-session'}
+        anchors={userAnchors}
+        activeIndex={activeUserIndex}
+        highlightedId={highlightedUserBlockId}
+        onSelect={handleSelectUserAnchor}
+      />
+    </div>
   );
 }

@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import type { AgentStatus } from '@/stores/ui-store';
+import type { MessageTimelineItem } from '@/lib/message-timeline';
 import { UserBubble } from './user-bubble';
 import { BareConfucius } from './bare-confucius';
 import { CollapsibleSubAgent } from './collapsible-sub-agent';
@@ -9,10 +10,12 @@ export interface AgentMessageProps {
   role: 'user' | 'assistant';
   content: string;
   reasoning?: string;
-  toolCalls: string[];
+  timeline: MessageTimelineItem[];
   status: AgentStatus;
   // 是否为仍在输出的活动流式段（running/tool_call）；持久化块与已结束段为 false。
   isLive?: boolean;
+  // 左侧用户消息导航轨道点击后的定位高亮，仅用户气泡消费。
+  navigationHighlighted?: boolean;
 }
 
 // 按 role / agent 名统一派发：持久化块与流式段归约为同一形状后共用此分发器（design D3）。
@@ -22,15 +25,16 @@ export interface AgentMessageProps {
 // 主/子判定键于固定 agent 枚举字面量；拓扑日后变化只需改这一处谓词。
 export const AgentMessage = memo(function AgentMessage(props: AgentMessageProps) {
   if (props.role === 'user') {
-    return <UserBubble content={props.content} />;
+    return (
+      <UserBubble content={props.content} isHighlighted={props.navigationHighlighted} />
+    );
   }
 
   if (props.agent === 'Confucius') {
     return (
       <BareConfucius
-        content={props.content}
         reasoning={props.reasoning}
-        toolCalls={props.toolCalls}
+        timeline={props.timeline}
         status={props.status}
         isLive={!!props.isLive}
       />
@@ -40,9 +44,8 @@ export const AgentMessage = memo(function AgentMessage(props: AgentMessageProps)
   return (
     <CollapsibleSubAgent
       agent={props.agent}
-      content={props.content}
       reasoning={props.reasoning ?? ''}
-      toolCalls={props.toolCalls}
+      timeline={props.timeline}
       status={props.status}
       isLive={!!props.isLive}
     />

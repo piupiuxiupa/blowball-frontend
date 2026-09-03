@@ -92,6 +92,15 @@ button:not(:disabled) {
   color: var(--color-foreground);
 }
 
+/* 用户气泡是实色主色底（bg-primary），全局橙色选区叠在同色系上几乎不可见——
+   气泡内划选改用白色高亮。用后代选择器而非单点 .user-bubble::selection：
+   ::selection 逐元素匹配，需命中气泡内每个 Markdown 子元素才跨浏览器可靠。 */
+.user-bubble ::selection,
+.user-bubble::selection {
+  background: rgba(255, 255, 255, 0.45);
+  color: var(--color-primary-foreground);
+}
+
 /* ---- Liquid glass surfaces ---------------------------------------------- */
 
 @layer components {
@@ -142,6 +151,18 @@ button:not(:disabled) {
 
 ::-webkit-scrollbar-track {
   background-color: transparent;
+}
+
+/* 用户消息导航轨道保留滚轮能力但隐藏滚动条：刻度本身即位置指示，
+   传统滚动条会把它变成第二条可见滚动区域。 */
+.message-rail-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.message-rail-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 /* Honour reduced-motion: glass blur stays (it is structural), only drop

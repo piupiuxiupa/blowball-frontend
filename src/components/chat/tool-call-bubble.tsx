@@ -17,6 +17,11 @@ export interface ParsedToolCall {
   isResult?: boolean;
 }
 
+export interface ParsedToolResult {
+  args: ToolArg[];
+  isError: boolean;
+}
+
 const NAME_KEYS = ['name', 'tool', 'tool_name', 'toolName'];
 const ARGS_KEYS = ['args', 'arguments', 'parameters', 'params', 'input'];
 
@@ -96,6 +101,17 @@ function parseResultRecord(
   return null;
 }
 
+// 单独解析 tool_result。与 parseToolCall 不同：即使结果是子 agent 的原文输出、
+// 不具备状态信封，也始终按“结果”展示，而不是误识别成工具名。
+export function parseToolResult(raw: string): ParsedToolResult {
+  const parsed = tryJson(raw);
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const result = parseResultRecord(parsed as Record<string, unknown>);
+    if (result) return result;
+  }
+  return raw ? { args: [{ key: 'result', value: raw }], isError: false } : { args: [], isError: false };
+}
+
 // 将 tool_call / tool_result 的 content（JSON 字符串 / 函数调用串 / 纯工具名）解析为
 // { name, args, isError, isResult }。对未知结构保持健壮：解析失败时回退为整串当工具名展示。
 export function parseToolCall(raw: string): ParsedToolCall {
@@ -169,10 +185,24 @@ function formatValue(value: unknown): { text: string; block: boolean } {
  * 撑开正文（尤其 Confucius 连续的 invoke_* 调用）。无参数的工具调用不提供展开。
  * 工具执行出错（output.status === 1）时整卡渲染为淡红色，头部图标切换为警告。
  */
-export const ToolCallBubble = memo(function ToolCallBubble({ raw }: { raw: string }) {
-  const { name, args, isError, isResult } = useMemo(() => parseToolCall(raw), [raw]);
+export const ToolCallBubble = memo(function ToolCallBubble({
+  raw,
+  result,
+}: {
+  raw: string;
+  result?: string;
+}) {
+  const call = useMemo(() => parseToolCall(raw), [raw]);
+  const resultInfo = useMemo(
+    () => (result === undefined ? undefined : parseToolResult(result)),
+    [result],
+  );
+  const { name, args } = call;
+  // 未合并的独立 result 记录仍按“工具结果”兜底展示；正常路径 result 会挂在调用卡上。
+  const isResult = call.isResult && result === undefined;
+  const isError = resultInfo?.isError ?? call.isError;
   const [collapsed, setCollapsed] = useState(true);
-  const hasArgs = args.length > 0;
+  const hasDetails = args.length > 0 || (resultInfo?.args.length ?? 0) > 0;
 
   const headerLabel = (
     <>
@@ -190,6 +220,11 @@ export const ToolCallBubble = memo(function ToolCallBubble({ raw }: { raw: strin
           <span className="truncate font-mono text-foreground">{name}</span>
         </>
       )}
+      {result !== undefined && (
+        <span className={cn('ml-1', isError ? 'text-destructive' : 'text-muted-foreground/70')}>
+          {isError ? '失败' : '完成'}
+        </span>
+      )}
     </>
   );
 
@@ -200,7 +235,7 @@ export const ToolCallBubble = memo(function ToolCallBubble({ raw }: { raw: strin
         isError ? 'border-red-200 bg-red-50/60' : 'border-white/50 bg-white/40',
       )}
     >
-      {hasArgs ? (
+      {hasDetails ? (
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
@@ -221,31 +256,65 @@ export const ToolCallBubble = memo(function ToolCallBubble({ raw }: { raw: strin
       ) : (
         <div className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted-foreground">
           {headerLabel}
-          <span className="ml-auto text-muted-foreground/70">无参数</span>
+          <span className="ml-auto text-muted-foreground/70">无详情</span>
         </div>
       )}
 
-      {hasArgs && !collapsed && (
-        <dl className="space-y-1.5 px-3 py-2">
-          {args.map(({ key, value }) => {
-            const { text, block } = formatValue(value);
-            return (
-              <div key={key} className="space-y-0.5">
-                <dt className="text-xs font-medium text-muted-foreground">{key}</dt>
-                <dd
-                  className={cn(
-                    'text-xs text-foreground',
-                    block
-                      ? 'whitespace-pre-wrap break-words rounded-lg bg-black/[0.04] px-2 py-1 font-mono leading-relaxed'
-                      : 'break-words font-mono'
-                  )}
-                >
-                  {text}
-                </dd>
-              </div>
-            );
-          })}
-        </dl>
+      {hasDetails && !collapsed && (
+        <div className="space-y-3 px-3 py-2">
+          {args.length > 0 && (
+            <section className="space-y-1.5">
+              <h4 className="text-xs font-medium text-muted-foreground">参数</h4>
+              <dl className="space-y-1.5">
+                {args.map(({ key, value }) => {
+                  const { text, block } = formatValue(value);
+                  return (
+                    <div key={key} className="space-y-0.5">
+                      <dt className="text-xs font-medium text-muted-foreground">{key}</dt>
+                      <dd
+                        className={cn(
+                          'text-xs text-foreground',
+                          block
+                            ? 'whitespace-pre-wrap break-words rounded-lg bg-black/[0.04] px-2 py-1 font-mono leading-relaxed'
+                            : 'break-words font-mono',
+                        )}
+                      >
+                        {text}
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
+            </section>
+          )}
+          {resultInfo && resultInfo.args.length > 0 && (
+            <section className="space-y-1.5">
+              <h4 className={cn('text-xs font-medium', isError ? 'text-destructive' : 'text-muted-foreground')}>
+                结果
+              </h4>
+              <dl className="space-y-1.5">
+                {resultInfo.args.map(({ key, value }) => {
+                  const { text, block } = formatValue(value);
+                  return (
+                    <div key={key} className="space-y-0.5">
+                      <dt className="text-xs font-medium text-muted-foreground">{key}</dt>
+                      <dd
+                        className={cn(
+                          'text-xs text-foreground',
+                          block
+                            ? 'whitespace-pre-wrap break-words rounded-lg bg-black/[0.04] px-2 py-1 font-mono leading-relaxed'
+                            : 'break-words font-mono',
+                        )}
+                      >
+                        {text}
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
+            </section>
+          )}
+        </div>
       )}
     </div>
   );
