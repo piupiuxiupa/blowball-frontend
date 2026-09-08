@@ -330,6 +330,12 @@ export type TurnStatusResponse =
 // legacy 条目,此时发送侧显式传 model/reasoning_effort 会 400(per-request-model)。
 export type ModelsResponse = paths['/api/v1/models']['get']['responses']['200']['content']['application/json'];
 export type ModelEntry = NonNullable<ModelsResponse['models']>[number];
+// /api/v1/me/llm-token：当前用户的模型网关 Token 状态与写入请求。GET/PUT/DELETE
+// 都不回显明文，PUT 成功只返回不可逆掩码。
+export type LLMTokenStatus =
+  paths['/api/v1/me/llm-token']['get']['responses']['200']['content']['application/json'];
+export type LLMTokenPutRequest =
+  paths['/api/v1/me/llm-token']['put']['requestBody']['content']['application/json'];
 // 发送请求的思考等级参数类型(与契约枚举一致;UI 提供全集,见 model-selector)。
 export type ReasoningEffort = NonNullable<SendMessageRequest['reasoning_effort']>;
 export type CreateSessionResponse = paths['/api/v1/sessions']['post']['responses']['200']['content']['application/json'];

@@ -1662,6 +1662,141 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/llm-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the caller's LLM gateway token status (user-llm-token).
+         * @description Reports whether the authenticated user has configured a personal LLM
+         *     gateway token. The token itself is NEVER returned — only
+         *     `configured` plus, when set, a `masked_key` preview (a fixed mask and
+         *     the last four characters; tokens of eight characters or fewer show
+         *     only the mask). Served by the api role only (the agent role does not
+         *     register this endpoint).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Token status (masked; never the raw token). */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LLMTokenStatus"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                500: components["responses"]["Internal"];
+            };
+        };
+        /**
+         * Save the caller's LLM gateway token (user-llm-token).
+         * @description Stores (and idempotently overwrites) the authenticated user's LLM
+         *     gateway token in `user_llm_credentials`. The token replaces the
+         *     deployment-global `openai.api_key` for every LLM call attributable to
+         *     the user — the whole chat turn spawn tree, title generation, context
+         *     compaction summaries, and webfetch digestion — against the SAME
+         *     `openai.base_url` and model catalog. The value is trimmed, must be
+         *     non-empty and at most 512 characters, and is never echoed back (only
+         *     its mask). An invalid configured token fails the user's LLM calls
+         *     explicitly; there is no silent fallback to the global key.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    /**
+                     * @example {
+                     *       "api_key": "sk-my-gateway-token"
+                     *     }
+                     */
+                    "application/json": components["schemas"]["LLMTokenPutRequest"];
+                };
+            };
+            responses: {
+                /** @description Token stored; the response carries only the mask. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "configured": true,
+                         *       "masked_key": "***abcd"
+                         *     }
+                         */
+                        "application/json": components["schemas"]["LLMTokenStatus"];
+                    };
+                };
+                /** @description Blank (after trimming) or oversize (>512 chars) token; the stored value is unchanged. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                500: components["responses"]["Internal"];
+            };
+        };
+        post?: never;
+        /**
+         * Delete the caller's LLM gateway token (user-llm-token).
+         * @description Removes the authenticated user's stored token. Subsequent LLM calls
+         *     for the user fall back to the deployment-global `openai.api_key`.
+         *     Deleting an absent token is a success. Served by the api role only.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Token deleted (or already absent). */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "configured": false
+                         *     }
+                         */
+                        "application/json": components["schemas"]["LLMTokenStatus"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                500: components["responses"]["Internal"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2362,6 +2497,27 @@ export interface components {
             max_completion_tokens: number;
             /** @description Whether the model supports reasoning (gates non-`none` reasoning_effort values). */
             thinking: boolean;
+        };
+        /**
+         * @description Per-user LLM gateway token status (user-llm-token). The raw token is
+         *     never serialized; `masked_key` is a fixed mask plus the last four
+         *     characters (omitted entirely when no token is configured, and reduced
+         *     to just the mask for tokens of eight characters or fewer so the
+         *     preview can never reconstruct the secret).
+         */
+        LLMTokenStatus: {
+            /** @description Whether the user has a personal gateway token stored. */
+            configured: boolean;
+            /** @description Unrecoverable preview (`***` + last four characters); present only when configured. */
+            masked_key?: string;
+        };
+        /**
+         * @description Body for PUT /api/v1/me/llm-token. The token is trimmed server-side
+         *     and must be non-empty with at most 512 characters.
+         */
+        LLMTokenPutRequest: {
+            /** @description The user's gateway token (plaintext in the request body; stored plaintext in MySQL, never returned). */
+            api_key: string;
         };
         /**
          * @description Server-signed OnlyOffice DocEditor configs for both edit and view modes.
