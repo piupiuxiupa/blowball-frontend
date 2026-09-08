@@ -28,7 +28,9 @@ export const UserBubble = memo(function UserBubble({
       </div>
       <div
         className={cn(
-          'max-w-[80%] space-y-1 rounded-2xl rounded-br-md bg-primary px-3.5 py-2.5 text-sm text-primary-foreground transition-shadow duration-200',
+          // user-bubble 类挂钩 index.css 的白色 ::selection——实色主色底上全局橙色
+          // 选区同色系叠加几乎不可见,缺失该类会导致划选高亮出不来看不见。
+          'user-bubble max-w-[80%] space-y-1 rounded-2xl rounded-br-md bg-primary px-3.5 py-2.5 text-sm text-primary-foreground transition-shadow duration-200',
           'shadow-[inset_0_1px_0_0_rgba(255,255,255,0.45),0_8px_20px_-8px_rgba(255,159,10,0.65)]',
           isHighlighted &&
             'ring-2 ring-white/90 ring-offset-2 ring-offset-background/60'

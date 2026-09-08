@@ -3,12 +3,15 @@ import { Loader2, Wrench, AlertCircle, Check, ChevronDown, Lightbulb } from 'luc
 import type { AgentStatus } from '@/stores/ui-store';
 import { MarkdownRenderer } from './markdown-renderer';
 import { OrderedMessageContent } from './ordered-message-content';
+import { SubAgentRunTranscripts } from './sub-agent-run-transcripts';
 import type { MessageTimelineItem } from '@/lib/message-timeline';
 
 interface CollapsibleSubAgentProps {
   agent: string;
   reasoning: string;
   timeline: MessageTimelineItem[];
+  agentInstanceId?: string;
+  sessionId?: string | null;
   status: AgentStatus;
   isLive: boolean;
 }
@@ -59,6 +62,8 @@ export const CollapsibleSubAgent = memo(function CollapsibleSubAgent({
   agent,
   reasoning,
   timeline,
+  agentInstanceId,
+  sessionId,
   status,
   isLive,
 }: CollapsibleSubAgentProps) {
@@ -98,6 +103,10 @@ export const CollapsibleSubAgent = memo(function CollapsibleSubAgent({
           )}
 
           <OrderedMessageContent timeline={timeline} isLive={isLive} />
+
+          {sessionId && agentInstanceId && (
+            <SubAgentRunTranscripts sessionId={sessionId} agentInstanceId={agentInstanceId} />
+          )}
 
           {timeline.length === 0 && !reasoning && status === 'running' && (
             <div className="text-xs text-muted-foreground">思考中…</div>

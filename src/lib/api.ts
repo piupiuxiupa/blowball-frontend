@@ -1,4 +1,4 @@
-import type { paths } from './openapi';
+import type { components, paths } from './openapi';
 
 // The backend runs as two deployable roles that may listen on separate ports
 // (see the "--role api|agent" split in cmd/blowball/serve.go):
@@ -330,7 +330,7 @@ export type TurnStatusResponse =
 // legacy 条目,此时发送侧显式传 model/reasoning_effort 会 400(per-request-model)。
 export type ModelsResponse = paths['/api/v1/models']['get']['responses']['200']['content']['application/json'];
 export type ModelEntry = NonNullable<ModelsResponse['models']>[number];
-// 发送请求的思考等级参数类型(契约枚举含 max;UI 提供其中五档,见 model-selector)。
+// 发送请求的思考等级参数类型(与契约枚举一致;UI 提供全集,见 model-selector)。
 export type ReasoningEffort = NonNullable<SendMessageRequest['reasoning_effort']>;
 export type CreateSessionResponse = paths['/api/v1/sessions']['post']['responses']['200']['content']['application/json'];
 export type SessionMessagesResponse =
@@ -347,6 +347,17 @@ export type WriteContentRequest =
 export type FileContentWriteResponse =
   paths['/api/v1/workspace/files/{path}/content']['put']['responses']['200']['content']['application/json'];
 export type Message = NonNullable<SessionMessagesResponse['messages']>[number];
+// GET .../subagents/:agent_instance_id/runs：同一动态子 Agent 实例的终态 run 元数据。
+// 刻意不含 transcript，供前端展开实例时懒加载列表，再按 run 取详情。
+export type SubAgentRunListResponse =
+  paths['/api/v1/sessions/{session_id}/subagents/{agent_instance_id}/runs']['get']['responses']['200']['content']['application/json'];
+export type SubAgentRunSummary = NonNullable<SubAgentRunListResponse['runs']>[number];
+// GET .../runs/:run_id：单个 run 的安全 transcript DTO（只含本次 delta，不拼接前驱）。
+export type SubAgentRunDetail =
+  paths['/api/v1/sessions/{session_id}/subagents/{agent_instance_id}/runs/{run_id}']['get']['responses']['200']['content']['application/json'];
+export type SubAgentTranscriptItem = NonNullable<SubAgentRunDetail['transcript']>[number];
+// plan_updated.content 解码后的语义计划快照（SSE 与持久化行共用）。
+export type PlanSnapshot = components['schemas']['SSEPlanSnapshot'];
 export type FileEntry = NonNullable<FileListResponse['files']>[number];
 export type UpdateTitleRequest =
   paths['/api/v1/sessions/{session_id}']['patch']['requestBody']['content']['application/json'];

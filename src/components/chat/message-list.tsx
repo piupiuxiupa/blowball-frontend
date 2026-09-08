@@ -22,6 +22,7 @@ interface MessageBlock {
   id: string;
   agent: string;
   runId: string;
+  agentInstanceId: string;
   role: 'user' | 'assistant';
   /** 会话级 turn 序号（1-based）：每条用户消息开启一个 turn，其后续回复继承该值。 */
   turn: number;
@@ -37,23 +38,29 @@ type ListItem =
   | { kind: 'block'; block: MessageBlock }
   | { kind: 'streaming'; segment: StreamingSegment };
 
-// 行的 run 身份（子 agent 调用的父 tool_call id）；NULL/缺失归一为空串（顶层回合）。
+// 行的单次 dispatch 身份（子 agent 的父 tool_call id）；NULL/缺失归一为空串（顶层回合）。
 function messageRunId(msg: Message): string {
   return typeof msg.run_id === 'string' ? msg.run_id : '';
 }
 
-// 复合分段键：并发同名子 agent 调用（同 agent、不同 run_id）各自成块，交错行按归属
-// 路由，不再拼进同一段。agent 名不含空格，按首个空格拼接/拆分即无歧义。
-function blockKey(agent: string, runId: string): string {
-  return `${agent} ${runId}`;
+// 动态子 Agent 的稳定实例身份；NULL/缺失归一为空串（顶层/存量回合）。
+function messageInstanceId(msg: Message): string {
+  return typeof msg.agent_instance_id === 'string' ? msg.agent_instance_id : '';
+}
+
+// 复合线程键：优先 (agent, agent_instance_id)，同一实例连同全部 resume 归并为一
+// 条线程；存量行无实例身份时退化到 (agent, run_id)。agent 名不含空格，拼接无歧义。
+function blockKey(agent: string, runId: string, agentInstanceId = ''): string {
+  // 无实例身份的键保留尾部空格，供“子 Agent 到达时挂起顶层块”的既有判断识别。
+  return agentInstanceId ? `${agent} i:${agentInstanceId}` : `${agent} r:${runId} `;
 }
 
 function groupMessages(messages: Message[]): MessageBlock[] {
   const blocks: MessageBlock[] = [];
   let turn = 0;
-  // 打开中的块按 (agent, run_id) 复合键索引：交错到达的多个 run 同时各挂一块，
-  // agent_end 只关闭自己那个 run 的块；块在打开时即占位（展示顺序 = 开块顺序，
-  // 与流式分段的追加顺序一致）。
+  // 打开中的块按 agent + 线程身份索引：交错到达的多个实例同时各挂一块；
+  // 动态实例的 agent_end 不关闭线程（后续 resume 继续并入），存量 run 仍按
+  // run_id 关闭。块在打开时即占位，展示顺序 = 首次开块顺序。
   const open = new Map<string, MessageBlock>();
 
   const openBlock = (msg: Message): MessageBlock => {
@@ -70,17 +77,30 @@ function groupMessages(messages: Message[]): MessageBlock[] {
       id: `agent-${msg.id}`,
       agent: msg.agent,
       runId: messageRunId(msg),
+      agentInstanceId: messageInstanceId(msg),
       role: 'assistant',
       turn,
       content: '',
       timeline: [],
     };
+    // 同一动态实例可能在后续用户回合再次 resume；按线程复用既有块，保证“一个
+    // 实例一条线程”的契约，而不是在每个回合都裂成新的气泡。
+    const existing = messageInstanceId(msg)
+      ? [...blocks]
+          .reverse()
+          .find((item) => item.agent === msg.agent && item.agentInstanceId === messageInstanceId(msg))
+      : undefined;
+    if (existing) {
+      existing.runId = messageRunId(msg);
+      open.set(blockKey(msg.agent, existing.runId, existing.agentInstanceId), existing);
+      return existing;
+    }
     blocks.push(block);
-    open.set(blockKey(msg.agent, messageRunId(msg)), block);
+    open.set(blockKey(msg.agent, messageRunId(msg), messageInstanceId(msg)), block);
     return block;
   };
   const blockFor = (msg: Message): MessageBlock | undefined =>
-    open.get(blockKey(msg.agent, messageRunId(msg)));
+    open.get(blockKey(msg.agent, messageRunId(msg), messageInstanceId(msg)));
 
   // 历史分组在本次 useMemo 内新建并填充 block，尚未交给 React state；
   // 这里可以安全地原地合并相邻 token，避免每个 token 都复制 timeline 数组。
@@ -102,6 +122,7 @@ function groupMessages(messages: Message[]): MessageBlock[] {
         id: `user-${msg.id}`,
         agent: 'user',
         runId: '',
+        agentInstanceId: '',
         role: 'user',
         turn,
         content: msg.content,
@@ -118,8 +139,10 @@ function groupMessages(messages: Message[]): MessageBlock[] {
     }
 
     if (msg.event_type === 'agent_end') {
-      // 只结束自己这个 run 的块；并发的其他 run 继续累积。
-      open.delete(blockKey(msg.agent, messageRunId(msg)));
+      // 只结束存量 run 块；动态实例线程保持打开，后续 resume 并入同块。
+      if (!messageInstanceId(msg)) {
+        open.delete(blockKey(msg.agent, messageRunId(msg)));
+      }
       continue;
     }
 
@@ -138,6 +161,7 @@ function groupMessages(messages: Message[]): MessageBlock[] {
           id: `error-${msg.id}`,
           agent: msg.agent,
           runId: messageRunId(msg),
+          agentInstanceId: messageInstanceId(msg),
           role: 'assistant',
           turn,
           content: `[错误] ${msg.content}`,
@@ -157,7 +181,13 @@ function groupMessages(messages: Message[]): MessageBlock[] {
         // 子 agent 可能已把父块暂时挂起；结果仍应回填到同身份最近的父块中。
         current = [...blocks]
           .reverse()
-          .find((block) => block.agent === msg.agent && block.runId === messageRunId(msg));
+          .find(
+            (block) =>
+              block.agent === msg.agent &&
+              (messageInstanceId(msg)
+                ? block.agentInstanceId === messageInstanceId(msg)
+                : block.runId === messageRunId(msg))
+          );
       }
       if (current) {
         if (msg.event_type === 'tool_call') {
@@ -171,6 +201,12 @@ function groupMessages(messages: Message[]): MessageBlock[] {
           }
         }
       }
+      continue;
+    }
+
+    if (msg.event_type === 'plan_updated') {
+      const current = blockFor(msg) ?? openBlock(msg);
+      current.timeline.push({ type: 'plan', content: msg.content });
       continue;
     }
 
@@ -539,6 +575,7 @@ export function MessageList() {
                   <div className={cn(tightTop ? 'pb-2 pt-0' : 'py-2')}>
                     {item.kind === 'block' ? (
                       <ChatMessage
+                        sessionId={activeSessionId}
                         block={item.block}
                         navigationHighlighted={
                           item.block.role === 'user' && item.block.id === highlightedUserBlockId
@@ -551,6 +588,8 @@ export function MessageList() {
                         content={item.segment.content}
                         reasoning={item.segment.reasoning}
                         timeline={item.segment.timeline}
+                        agentInstanceId={item.segment.agentInstanceId || undefined}
+                        sessionId={activeSessionId}
                         status={item.segment.status}
                         isLive={
                           item.segment.status === 'running' || item.segment.status === 'tool_call'

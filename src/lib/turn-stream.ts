@@ -15,22 +15,33 @@ interface StreamEvent {
   // tool_call：content=工具名，参数在 meta.args（见 openapi SSEToolCall）。
   // tool_result：content 是工具结果状态信封 JSON 串（{"status":0,"result":...} /
   // {"status":1,"error":...}），meta.tool_call_id 关联对应 tool_call（见 openapi SSEToolResult）。
-  // parent_tool_call_id：子 agent 调用的 run 身份（父 invoke tool_call id），仅子 agent
-  // 事件携带；并发同名调用靠它区分路由，缺失为空串（顶层事件，退化按 agent 名路由）。
+  // parent_tool_call_id：子 agent 单次 dispatch 的 run 身份（父 spawn tool_call id）。
+  // agent_instance_id：跨 resume 稳定的实例线程身份；路由优先使用它，缺失为空串。
   // run_id：本 turn 的 run id（= trace id），所有事件携带；X-Run-Id 响应头缺失时的兜底渠道。
   meta?: {
     args?: unknown;
     tool_call_id?: string;
     parent_tool_call_id?: string;
+    agent_instance_id?: string;
     run_id?: string;
     [key: string]: unknown;
   };
 }
 
-// 事件所属子 agent 调用的 run 身份；顶层事件返回空串。
+// 事件所属子 agent 单次 dispatch 的 run 身份；顶层事件返回空串。
 function runIdOf(payload: StreamEvent): string {
   const id = payload.meta?.parent_tool_call_id;
   return typeof id === 'string' ? id : '';
+}
+
+// 动态子 Agent 的稳定实例身份；缺失（顶层/存量事件）返回空串。
+function agentInstanceIdOf(payload: StreamEvent): string {
+  const id = payload.meta?.agent_instance_id;
+  return typeof id === 'string' ? id : '';
+}
+
+function routeOf(payload: StreamEvent): { runId: string; agentInstanceId: string } {
+  return { runId: runIdOf(payload), agentInstanceId: agentInstanceIdOf(payload) };
 }
 
 // rAF 节流保留到达顺序：同一路连续 token/reasoning 可合并，但不同类型或不同 agent
@@ -39,6 +50,7 @@ interface BufferedStreamEvent {
   kind: 'token' | 'reasoning';
   agent: string;
   runId: string;
+  agentInstanceId: string;
   content: string;
 }
 
@@ -89,12 +101,12 @@ export async function consumeTurnStream(
   response: Response,
   signal?: AbortSignal,
 ): Promise<void> {
-  const { startAgentSegment, appendSegmentContent, appendSegmentReasoning, pushSegmentToolCall, setSegmentStatus, setTurnRun } =
+  const { startAgentSegment, appendSegmentContent, appendSegmentReasoning, pushSegmentToolCall, pushSegmentPlan, setSegmentStatus, setTurnRun } =
     useUIStore.getState();
 
   // 流式 token 本地缓冲 + rAF 节流：token / reasoning 先按到达顺序累积进缓冲，
   // 每个动画帧最多 flush 一次到 store，把渲染频率压到 ≤60fps。相邻的同类型同路
-  // 事件会合并；并行/交错的子 agent 调用（runId 不同）不会串段。
+  // 事件会合并；并行/交错的子 agent 调用（线程身份不同）不会串段。
   // 收尾事件（done / agent_error / 异常 / abort）会同步 flush 剩余缓冲，
   // 避免丢失尾部 token；取消时也确保 rAF 句柄被回收，防止泄漏。
   let bufferedEvents: BufferedStreamEvent[] = [];
@@ -114,10 +126,11 @@ export async function consumeTurnStream(
     const events = bufferedEvents;
     bufferedEvents = [];
     for (const event of events) {
+      const route = { runId: event.runId, agentInstanceId: event.agentInstanceId };
       if (event.kind === 'token') {
-        appendSegmentContent(sessionId, event.agent, event.runId, event.content);
+        appendSegmentContent(sessionId, event.agent, route, event.content);
       } else {
-        appendSegmentReasoning(sessionId, event.agent, event.runId, event.content);
+        appendSegmentReasoning(sessionId, event.agent, route, event.content);
       }
     }
   };
@@ -126,16 +139,23 @@ export async function consumeTurnStream(
     kind: BufferedStreamEvent['kind'],
     agent: string,
     runId: string,
+    agentInstanceId: string,
     chunk: string,
   ) => {
     // 只合并真正的相邻同路同类型事件；一旦中间出现其他事件，就保留为独立节点，
     // 避免“token A → reasoning A → token A”被合并成 token → reasoning 的倒序。
     const last = bufferedEvents[bufferedEvents.length - 1];
-    if (last && last.kind === kind && last.agent === agent && last.runId === runId) {
+    if (
+      last &&
+      last.kind === kind &&
+      last.agent === agent &&
+      last.runId === runId &&
+      last.agentInstanceId === agentInstanceId
+    ) {
       last.content += chunk;
       return;
     }
-    bufferedEvents.push({ kind, agent, runId, content: chunk });
+    bufferedEvents.push({ kind, agent, runId, agentInstanceId, content: chunk });
   };
 
   const scheduleFlush = () => {
@@ -167,21 +187,35 @@ export async function consumeTurnStream(
 
       switch (payload.type) {
         case 'agent_start':
-          // push 新段、置 running。活动段即数组末尾。子 agent 调用带 runId 各自成段。
-          startAgentSegment(sessionId, payload.agent, runIdOf(payload));
+          // push/唤醒线程段。动态子 Agent 同实例 resume 复用旧段，并发实例各自成段。
+          startAgentSegment(sessionId, payload.agent, routeOf(payload));
           break;
         case 'token': {
           // 按 (agent, runId) 累积进缓冲，下一帧 flush 时追加到对应活动段。
           // 若 token 先于 agent_start 到达，appendSegmentContent 会按复合键惰性建段。
           if (payload.content) {
-            bufferEvent('token', payload.agent, runIdOf(payload), payload.content);
+            const route = routeOf(payload);
+            bufferEvent(
+              'token',
+              payload.agent,
+              route.runId,
+              route.agentInstanceId,
+              payload.content
+            );
             scheduleFlush();
           }
           break;
         }
         case 'reasoning': {
           if (payload.content) {
-            bufferEvent('reasoning', payload.agent, runIdOf(payload), payload.content);
+            const route = routeOf(payload);
+            bufferEvent(
+              'reasoning',
+              payload.agent,
+              route.runId,
+              route.agentInstanceId,
+              payload.content
+            );
             scheduleFlush();
           }
           break;
@@ -199,7 +233,7 @@ export async function consumeTurnStream(
             args: meta.args ?? {},
           });
           flush();
-          pushSegmentToolCall(sessionId, payload.agent, runIdOf(payload), record, {
+          pushSegmentToolCall(sessionId, payload.agent, routeOf(payload), record, {
             kind: 'call',
             toolCallId,
           });
@@ -214,7 +248,7 @@ export async function consumeTurnStream(
           pushSegmentToolCall(
             sessionId,
             payload.agent,
-            runIdOf(payload),
+            routeOf(payload),
             payload.content ?? '',
             {
               kind: 'result',
@@ -226,16 +260,23 @@ export async function consumeTurnStream(
           );
           break;
         }
+        case 'plan_updated': {
+          // 语义计划快照与 token 分开落 store：它不是正文，不能拼进 content；
+          // 也不能进 rAF 缓冲，否则可能被后续 token 重排到工具卡之后。
+          flush();
+          pushSegmentPlan(sessionId, payload.agent, routeOf(payload), payload.content ?? '');
+          break;
+        }
         case 'agent_end':
           // 先 flush 该路的待落缓冲，再按复合键置 idle——否则置 idle 后待 flush 的
           // token 会因找不到活动段而被惰性建段，产生重复的孤立 running 段。
           flush();
-          setSegmentStatus(sessionId, payload.agent, runIdOf(payload), 'idle');
+          setSegmentStatus(sessionId, payload.agent, routeOf(payload), 'idle');
           break;
         case 'agent_error':
           // 出错时先同步 flush，确保已收到的尾部 token 不丢失、不截断，再置段 error。
           flush();
-          setSegmentStatus(sessionId, payload.agent, runIdOf(payload), 'error');
+          setSegmentStatus(sessionId, payload.agent, routeOf(payload), 'error');
           break;
         case 'done':
           // 仅同步 flush 剩余缓冲；流式分段的清空交给流结束后的 reconcileTurnHistory，

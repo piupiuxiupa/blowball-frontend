@@ -189,8 +189,13 @@ function ToolEntries({
   const { entries, skillCount } = useMemo(() => {
     const match = (text: string) => !kw || text.toLowerCase().includes(kw);
     const skills = (skillsQuery.data?.skills ?? [])
-      .filter((s) => match(s.name))
-      .map<PickerEntry>((s) => ({ item: { kind: 'skill', name: s.name }, label: s.name }));
+      .filter((s) => match(`${s.name} ${s.description ?? ''}`))
+      .map<PickerEntry>((s) => ({
+        item: { kind: 'skill', name: s.name },
+        label: s.name,
+        sublabel: s.location === 'skill_market' ? '技能市场' : undefined,
+        description: s.description || undefined,
+      }));
     const tools = (toolsQuery.data?.tools ?? [])
       .filter((t) => match(`${t.name} ${t.server} ${t.description ?? ''}`))
       .map<PickerEntry>((t) => ({

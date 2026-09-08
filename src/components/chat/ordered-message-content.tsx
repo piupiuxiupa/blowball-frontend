@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import type { MessageTimelineItem } from '@/lib/message-timeline';
 import { StreamingContent } from './streaming-content';
+import { PlanSnapshotCard } from './plan-snapshot-card';
 import { ToolCallBubble } from './tool-call-bubble';
 
 interface OrderedMessageContentProps {
@@ -17,13 +18,15 @@ export const OrderedMessageContent = memo(function OrderedMessageContent({
 }: OrderedMessageContentProps) {
   return (
     <>
-      {timeline.map((item, index) =>
-        item.type === 'text' ? (
-          <StreamingContent key={`text-${index}`} text={item.content} isLive={isLive} />
-        ) : (
-          <ToolCallBubble key={`tool-${index}`} raw={item.content} result={item.result} />
-        ),
-      )}
+      {timeline.map((item, index) => {
+        if (item.type === 'text') {
+          return <StreamingContent key={`text-${index}`} text={item.content} isLive={isLive} />;
+        }
+        if (item.type === 'plan') {
+          return <PlanSnapshotCard key={`plan-${index}`} raw={item.content} />;
+        }
+        return <ToolCallBubble key={`tool-${index}`} raw={item.content} result={item.result} />;
+      })}
     </>
   );
 });

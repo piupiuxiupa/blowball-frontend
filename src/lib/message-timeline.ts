@@ -2,6 +2,7 @@
 // tool_call 作为独立节点保留；tool_result 通过 tool_call_id 合并回对应调用节点。
 export type MessageTimelineItem =
   | { type: 'text'; content: string }
+  | { type: 'plan'; content: string }
   | { type: 'tool'; content: string; result?: string; toolCallId?: string };
 
 export interface TimelineToolOptions {
@@ -82,4 +83,14 @@ export function appendTimelineTool(
     ...timeline,
     { type: 'tool', content, toolCallId: options.kind === 'call' ? options.toolCallId : undefined },
   ];
+}
+
+// plan_updated 的 content 是后端保证的 canonical JSON。timeline 保留原始字符串：
+// 解析/校验交给渲染层，store 与历史分组只做不可变追加，避免双份状态或重复解析。
+export function appendTimelinePlan(
+  timeline: MessageTimelineItem[],
+  content: string,
+): MessageTimelineItem[] {
+  if (!content) return timeline;
+  return [...timeline, { type: 'plan', content }];
 }

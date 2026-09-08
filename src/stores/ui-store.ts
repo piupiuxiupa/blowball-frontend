@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { ReasoningEffort } from '@/lib/api';
 import {
+  appendTimelinePlan,
   appendTimelineText,
   appendTimelineTool,
   attachTimelineToolResult,
@@ -17,18 +18,22 @@ export type AgentStatus = 'idle' | 'running' | 'tool_call' | 'error';
 // 真实 id)。唯一需要显式排除的是读取侧:use-messages 的 enabled。
 export const DRAFT_SESSION_ID = 'draft';
 
-// 流式按 (agent, runId) 分段：每个 agent_start 开启一段，token/reasoning/tool_call
+// 流式按 agent + 线程身份分段：动态子 Agent 优先 (agent, agentInstanceId)，同一
+// 实例的多次 resume 归并到同一条线程；存量事件没有实例身份时退化为 runId。
+// 每个 agent_start 开启或唤醒一段，token/reasoning/tool_call
 // 追加到对应段的 timeline，使流式期间即按 agent 分隔且段内保序展示，不再等回合结束才切分。
 // 段仅追加、不重排。
-// runId 取自事件的 meta.parent_tool_call_id（子 agent 调用的 tool_call id）——并发同名
-// 子 agent 调用各自成段、互不串文；缺失（顶层 Confucius 事件）为空串，退化为按 agent
-// 名路由的旧行为，单 agent 回合不受影响。
+// runId 取自事件的 meta.parent_tool_call_id，保留本次执行身份；并发同名子 Agent
+// 调用有不同实例身份，各自成段、互不串文；顶层事件身份为空串，退化为按 agent
+// 名路由的旧行为。
 export interface StreamingSegment {
   // 创建时分配的单调 id，用作稳定 React key——新段到达不会让已渲染段错位或重挂载。
   id: string;
   agent: string;
-  // 该段所属子 agent 调用的 run 身份（父 invoke tool_call id）；空串 = 无身份（顶层回合）。
+  // 本次 dispatch 的 run 身份（父 spawn tool_call id）；空串 = 无身份（顶层回合）。
   runId: string;
+  // 跨 resume 稳定的动态子 Agent 实例身份；空串 = 存量事件/顶层回合。
+  agentInstanceId: string;
   content: string;
   reasoning: string;
   // 正文片段与工具记录的事件序列。content 仍保留聚合文本便于兼容/诊断，
@@ -36,6 +41,11 @@ export interface StreamingSegment {
   timeline: MessageTimelineItem[];
   status: AgentStatus;
   isError?: boolean;
+}
+
+export interface SegmentRoute {
+  runId?: string;
+  agentInstanceId?: string;
 }
 
 // 文件查看模式：默认「只读」(view)，切到「编辑」(edit) 后 Monaco 可写并暴露保存入口。
@@ -74,17 +84,38 @@ interface UIState {
   toggleShowHiddenFiles: () => void;
   setTurnRun: (sessionId: string, runId: string | null) => void;
   setModelSelection: (model: string | null, effort: ReasoningEffort | null) => void;
-  startAgentSegment: (sessionId: string, agent: string, runId?: string) => void;
-  appendSegmentContent: (sessionId: string, agent: string, runId: string, chunk: string) => void;
-  appendSegmentReasoning: (sessionId: string, agent: string, runId: string, chunk: string) => void;
+  startAgentSegment: (sessionId: string, agent: string, route: SegmentRoute) => void;
+  appendSegmentContent: (
+    sessionId: string,
+    agent: string,
+    route: SegmentRoute,
+    chunk: string
+  ) => void;
+  appendSegmentReasoning: (
+    sessionId: string,
+    agent: string,
+    route: SegmentRoute,
+    chunk: string
+  ) => void;
   pushSegmentToolCall: (
     sessionId: string,
     agent: string,
-    runId: string,
+    route: SegmentRoute,
     content: string,
     options?: TimelineToolOptions,
   ) => void;
-  setSegmentStatus: (sessionId: string, agent: string, runId: string, status: AgentStatus) => void;
+  pushSegmentPlan: (
+    sessionId: string,
+    agent: string,
+    route: SegmentRoute,
+    content: string
+  ) => void;
+  setSegmentStatus: (
+    sessionId: string,
+    agent: string,
+    route: SegmentRoute,
+    status: AgentStatus
+  ) => void;
   clearStreamingSegments: (sessionId: string) => void;
 }
 
@@ -95,23 +126,23 @@ function nextSegmentId(): string {
   return `seg-${segmentIdCounter}`;
 }
 
-// 在数组中从末尾向前找该 (agent, runId) 的段：requireActive=true 时只匹配仍处
-// running/tool_call 的活动段（用于 token/reasoning/tool_call 路由），否则匹配该复合键的
-// 最后一段（用于状态置位）。返回该段下标，找不到返回 -1。runId 缺失（undefined）视同
-// 空串——顶层事件路由到无身份段。
+// 在数组中从末尾向前找该 agent + 线程身份的段。动态子 Agent 有 agentInstanceId 时，
+// 已结束的段也可被 resume 唤醒（同一实例始终一条线程）；没有实例身份的存量事件仍按
+// requireActive 决定是否只路由活动段。runId 缺省视同空串——顶层事件路由到无身份段。
 function findSegmentIndex(
   segments: StreamingSegment[],
   agent: string,
-  runId: string | undefined,
+  route: SegmentRoute | undefined,
   requireActive: boolean,
 ): number {
-  const run = runId ?? '';
+  const run = route?.runId ?? '';
+  const instance = route?.agentInstanceId ?? '';
   for (let i = segments.length - 1; i >= 0; i--) {
     const seg = segments[i];
     if (
       seg.agent === agent &&
-      seg.runId === run &&
-      (!requireActive || seg.status === 'running' || seg.status === 'tool_call')
+      (instance ? seg.agentInstanceId === instance : seg.runId === run) &&
+      (!requireActive || !!instance || seg.status === 'running' || seg.status === 'tool_call')
     ) {
       return i;
     }
@@ -170,19 +201,31 @@ export const useUIStore = create<UIState>((set) => ({
 
   setModelSelection: (model, effort) => set({ selectedModel: model, selectedEffort: effort }),
 
-  // agent_start：push 新段、分配单调 id、置 running。活动段即数组末尾。
-  // 若该 (agent, runId) 已有活动段（如 token 先于 agent_start 惰性建段），复用它而非再
-  // push——否则会产生重复的孤立 running 段（无人置 idle 关闭）。并发同名子 agent 调用
-  // 因 runId 不同而各自建段。
-  startAgentSegment: (sessionId, agent, runId) =>
+  // agent_start：push 新段或唤醒同实例旧段，并置 running。若同线路已有活动段
+  // （如 token 先到），复用它而非再 push，避免重复孤立段。动态子 Agent resume 时，
+  // 旧段已 idle 也复用并更新 runId，使一个实例始终呈现为一条线程。
+  startAgentSegment: (sessionId, agent, route) =>
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
-      if (findSegmentIndex(prev, agent, runId, true) >= 0) return {};
-      const base = detachActiveTopLevelSegments(prev, runId ?? '');
+      const routed = route.agentInstanceId
+        ? detachActiveTopLevelSegments(prev, route.runId ?? '')
+        : prev;
+      const idx = findSegmentIndex(routed, agent, route, true);
+      if (idx >= 0) {
+        const next = routed.slice();
+        next[idx] = {
+          ...next[idx],
+          runId: route.runId ?? '',
+          status: 'running',
+        };
+        return { streamingSegments: { ...state.streamingSegments, [sessionId]: next } };
+      }
+      const base = detachActiveTopLevelSegments(routed, route.runId ?? '');
       const seg: StreamingSegment = {
         id: nextSegmentId(),
         agent,
-        runId: runId ?? '',
+        runId: route.runId ?? '',
+        agentInstanceId: route.agentInstanceId ?? '',
         content: '',
         reasoning: '',
         timeline: [],
@@ -196,20 +239,23 @@ export const useUIStore = create<UIState>((set) => ({
       };
     }),
 
-  // token 追加：路由到该 (agent, runId) 的活动段。无活动段（token 先于 agent_start，或
-  // 上一段已结束）时惰性建段（对齐 groupMessages 兜底），确保 token 不丢失、不串入其他
-  // 调用的段——并发同名调用靠 runId 区分。
-  appendSegmentContent: (sessionId, agent, runId, chunk) => {
+  // token 追加：按线程身份路由。无活动段（token 先于 agent_start，或存量 run 已结束）
+  // 时惰性建段；动态实例则优先并入同实例旧段，resume 不产生第二条气泡。
+  appendSegmentContent: (sessionId, agent, route, chunk) => {
     if (!chunk) return;
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
-      const idx = findSegmentIndex(prev, agent, runId, true);
-      const base = idx >= 0 ? prev : detachActiveTopLevelSegments(prev, runId);
+      const routed = route.agentInstanceId
+        ? detachActiveTopLevelSegments(prev, route.runId ?? '')
+        : prev;
+      const idx = findSegmentIndex(routed, agent, route, true);
+      const base = idx >= 0 ? routed : detachActiveTopLevelSegments(routed, route.runId ?? '');
       if (idx >= 0) {
-        const next = prev.slice();
+        const next = routed.slice();
         const seg = next[idx];
         next[idx] = {
           ...seg,
+          runId: route.runId || seg.runId,
           content: seg.content + chunk,
           timeline: appendTimelineText(seg.timeline, chunk),
         };
@@ -218,7 +264,8 @@ export const useUIStore = create<UIState>((set) => ({
       const created: StreamingSegment = {
         id: nextSegmentId(),
         agent,
-        runId: runId ?? '',
+        runId: route.runId ?? '',
+        agentInstanceId: route.agentInstanceId ?? '',
         content: chunk,
         reasoning: '',
         timeline: [{ type: 'text', content: chunk }],
@@ -231,21 +278,29 @@ export const useUIStore = create<UIState>((set) => ({
   },
 
   // reasoning 追加：同 content 的活动段路由 + 惰性建段逻辑。
-  appendSegmentReasoning: (sessionId, agent, runId, chunk) => {
+  appendSegmentReasoning: (sessionId, agent, route, chunk) => {
     if (!chunk) return;
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
-      const idx = findSegmentIndex(prev, agent, runId, true);
-      const base = idx >= 0 ? prev : detachActiveTopLevelSegments(prev, runId);
+      const routed = route.agentInstanceId
+        ? detachActiveTopLevelSegments(prev, route.runId ?? '')
+        : prev;
+      const idx = findSegmentIndex(routed, agent, route, true);
+      const base = idx >= 0 ? routed : detachActiveTopLevelSegments(routed, route.runId ?? '');
       if (idx >= 0) {
-        const next = prev.slice();
-        next[idx] = { ...next[idx], reasoning: next[idx].reasoning + chunk };
+        const next = routed.slice();
+        next[idx] = {
+          ...next[idx],
+          runId: route.runId || next[idx].runId,
+          reasoning: next[idx].reasoning + chunk,
+        };
         return { streamingSegments: { ...state.streamingSegments, [sessionId]: next } };
       }
       const created: StreamingSegment = {
         id: nextSegmentId(),
         agent,
-        runId: runId ?? '',
+        runId: route.runId ?? '',
+        agentInstanceId: route.agentInstanceId ?? '',
         content: '',
         reasoning: chunk,
         timeline: [],
@@ -258,38 +313,42 @@ export const useUIStore = create<UIState>((set) => ({
   },
 
   // tool_call 作为 timeline 节点记入活动段；tool_result 优先按 tool_call_id 合并回
-  // 该 (agent, runId) 最近一段里的调用卡。若父 agent 段因子 agent 插入而暂时挂起，
+  // 该线程最近一段里的调用卡。若父 agent 段因子 agent 插入而暂时挂起，
   // 结果仍会更新前缀段中的调用卡，不会在子 agent 后再渲染一张独立结果卡。
-  pushSegmentToolCall: (sessionId, agent, runId, content, options = {}) => {
+  pushSegmentToolCall: (sessionId, agent, route, content, options = {}) => {
     if (!content) return;
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
-      const idx = findSegmentIndex(prev, agent, runId, true);
+      const routed = route.agentInstanceId
+        ? detachActiveTopLevelSegments(prev, route.runId ?? '')
+        : prev;
+      const idx = findSegmentIndex(routed, agent, route, true);
       if (options.kind === 'result') {
         // 活动段优先；没有活动段时回看同身份最近一段。后者覆盖「子 agent 已把父段
         // 暂时挂起，父 invoke tool_result 晚于子 agent 到达」的顺序。
-        const targetIdx = idx >= 0 ? idx : findSegmentIndex(prev, agent, runId, false);
+        const targetIdx = idx >= 0 ? idx : findSegmentIndex(routed, agent, route, false);
         if (targetIdx >= 0) {
-          const target = prev[targetIdx];
+          const target = routed[targetIdx];
           const attached = attachTimelineToolResult(
             target.timeline,
             content,
             options.toolCallId,
           );
           if (attached.matched) {
-            const next = prev.slice();
+            const next = routed.slice();
             next[targetIdx] = { ...target, timeline: attached.timeline };
             return { streamingSegments: { ...state.streamingSegments, [sessionId]: next } };
           }
         }
       }
 
-      const base = idx >= 0 ? prev : detachActiveTopLevelSegments(prev, runId);
+      const base = idx >= 0 ? routed : detachActiveTopLevelSegments(routed, route.runId ?? '');
       if (idx >= 0) {
-        const next = prev.slice();
+        const next = routed.slice();
         const seg = next[idx];
         next[idx] = {
           ...seg,
+          runId: route.runId || seg.runId,
           timeline: appendTimelineTool(seg.timeline, content, options),
           status: 'tool_call',
         };
@@ -298,7 +357,8 @@ export const useUIStore = create<UIState>((set) => ({
       const created: StreamingSegment = {
         id: nextSegmentId(),
         agent,
-        runId: runId ?? '',
+        runId: route.runId ?? '',
+        agentInstanceId: route.agentInstanceId ?? '',
         content: '',
         reasoning: '',
         timeline: [{ type: 'tool', content, toolCallId: options.toolCallId }],
@@ -310,18 +370,55 @@ export const useUIStore = create<UIState>((set) => ({
     });
   },
 
-  // 状态置位：agent_end→idle、agent_error→error/isError、tool_call→tool_call。
-  // 定位该 (agent, runId) 的最后一段（不限活动态），找不到则忽略（无对应段的状态事件
-  // 属异常边界）。
-  setSegmentStatus: (sessionId, agent, runId, status) =>
+  // plan_updated：canonical JSON 原样进入 timeline，与正文/工具按事件顺序渲染。
+  pushSegmentPlan: (sessionId, agent, route, content) => {
+    if (!content) return;
     set((state) => {
       const prev = state.streamingSegments[sessionId] ?? [];
-      const idx = findSegmentIndex(prev, agent, runId, false);
+      const routed = route.agentInstanceId
+        ? detachActiveTopLevelSegments(prev, route.runId ?? '')
+        : prev;
+      const idx = findSegmentIndex(routed, agent, route, true);
+      const base = idx >= 0 ? routed : detachActiveTopLevelSegments(routed, route.runId ?? '');
+      if (idx >= 0) {
+        const next = routed.slice();
+        const seg = next[idx];
+        next[idx] = {
+          ...seg,
+          runId: route.runId || seg.runId,
+          timeline: appendTimelinePlan(seg.timeline, content),
+        };
+        return { streamingSegments: { ...state.streamingSegments, [sessionId]: next } };
+      }
+      const created: StreamingSegment = {
+        id: nextSegmentId(),
+        agent,
+        runId: route.runId ?? '',
+        agentInstanceId: route.agentInstanceId ?? '',
+        content: '',
+        reasoning: '',
+        timeline: [{ type: 'plan', content }],
+        status: 'running',
+      };
+      return {
+        streamingSegments: { ...state.streamingSegments, [sessionId]: [...base, created] },
+      };
+    });
+  },
+
+  // 状态置位：agent_end→idle、agent_error→error/isError、tool_call→tool_call。
+  // 定位该线程的最后一段（不限活动态），找不到则忽略（无对应段的状态事件
+  // 属异常边界）。
+  setSegmentStatus: (sessionId, agent, route, status) =>
+    set((state) => {
+      const prev = state.streamingSegments[sessionId] ?? [];
+      const idx = findSegmentIndex(prev, agent, route, false);
       if (idx < 0) return {};
       const next = prev.slice();
       const seg = next[idx];
       next[idx] = {
         ...seg,
+        runId: route.runId || seg.runId,
         status,
         isError: status === 'error' ? true : seg.isError,
       };

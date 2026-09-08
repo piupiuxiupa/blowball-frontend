@@ -9,8 +9,8 @@ import type { ReasoningEffort } from '@/lib/api';
 // MessageInput 发送时作为可选参数带上;「默认」= 不发参数,由后端按配置/目录条目
 // 派生。挂在输入区上方（影响的是下一条消息,而非整个面板）。
 
-// UI 提供的思考等级（契约枚举的子集,不含 max）。
-const EFFORT_OPTIONS: ReasoningEffort[] = ['none', 'low', 'medium', 'high', 'xhigh'];
+// UI 提供的思考等级（契约枚举全集,含 max）。
+const EFFORT_OPTIONS: ReasoningEffort[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 export function ModelSelector() {
   const [open, setOpen] = useState(false);

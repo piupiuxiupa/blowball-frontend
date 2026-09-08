@@ -73,7 +73,17 @@ export function ChatPanel() {
                     key={skill.name}
                     className="rounded-xl px-2 py-1.5 transition-colors hover:bg-foreground/[0.06]"
                   >
-                    <div className="text-xs font-medium text-foreground">{skill.name}</div>
+                    <div className="flex items-baseline gap-2">
+                      <div className="text-xs font-medium text-foreground">{skill.name}</div>
+                      {skill.location === 'skill_market' && (
+                        <div className="text-[10px] text-muted-foreground">技能市场</div>
+                      )}
+                    </div>
+                    {skill.description && (
+                      <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+                        {skill.description}
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>

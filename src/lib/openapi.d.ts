@@ -283,6 +283,106 @@ export interface paths {
         };
         trace?: never;
     };
+    "/api/v1/sessions/{session_id}/subagents/{agent_instance_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List terminal sub-agent runs.
+         * @description Returns lightweight metadata for every durably persisted run of one
+         *     sub-agent instance. The session must belong to the authenticated user;
+         *     missing sessions, cross-user sessions, and missing instances all return
+         *     404 without distinguishing the cause. Message payloads are intentionally
+         *     omitted — fetch a run detail lazily when the user expands it.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    session_id: string;
+                    agent_instance_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Run metadata ordered by `run_no` ascending. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SubAgentRunListResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                404: components["responses"]["NotFound"];
+                500: components["responses"]["Internal"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{session_id}/subagents/{agent_instance_id}/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lazily load one sub-agent run transcript.
+         * @description Returns a sanitized transcript for one terminal run. The response is a
+         *     stable frontend DTO, not the internal OpenAI chat snapshot: system
+         *     prompts, tool definitions, resume metadata, context counters, and raw
+         *     `messages_json` are never exposed. A run still executing has no durable
+         *     terminal row and returns 404; use the live SSE/run event endpoint for
+         *     in-flight output.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    session_id: string;
+                    agent_instance_id: string;
+                    run_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Sanitized per-run transcript. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SubAgentRunDetail"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                404: components["responses"]["NotFound"];
+                500: components["responses"]["Internal"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{session_id}/messages": {
         parameters: {
             query?: never;
@@ -296,6 +396,13 @@ export interface paths {
          *     user. Messages are ordered by `(msg_time, msg_index)` ascending by
          *     default; use `order=desc` to retrieve newest first. Pass
          *     `page_token` from the previous response to advance pages.
+         *     While a turn is running, history is incremental: the user row and
+         *     already-closed merged events can appear before `done`. A still-growing
+         *     token/reasoning span is not written until it closes. Clients that
+         *     combine history with live run replay should deduplicate rows by
+         *     `trace_id` and `msg_index` (equivalently, the deterministic
+         *     `client_msg_id` when present); the event stream remains authoritative
+         *     for live output.
          */
         get: {
             parameters: {
@@ -361,7 +468,11 @@ export interface paths {
                  *     the request's trace id); every event's `meta.run_id` carries the
                  *     same value. Disconnecting from this stream does NOT cancel the
                  *     turn — cancel explicitly via the cancel endpoint.
-                 *     Event types: `agent_start`, `token`, `reasoning`, `tool_call`, `tool_result`,
+                 *     Stream closure waits for terminal message persistence with bounded
+                 *     retry and a bounded MySQL drain attempt. On a healthy storage path,
+                 *     stream completion therefore implies that the complete turn is
+                 *     available from the message-history endpoint.
+                 *     Event types: `agent_start`, `token`, `reasoning`, `tool_call`, `tool_result`, `plan_updated`,
                  *     `agent_end`, `agent_error`, `done`. The `done` event is always the final event.
                  */
                 200: {
@@ -371,7 +482,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "text/event-stream": components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEReasoning"] | components["schemas"]["SSEToolCall"] | components["schemas"]["SSEToolResult"] | components["schemas"]["SSEAgentEnd"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEDone"];
+                        "text/event-stream": components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEReasoning"] | components["schemas"]["SSEToolCall"] | components["schemas"]["SSEToolResult"] | components["schemas"]["SSEPlanUpdated"] | components["schemas"]["SSEAgentEnd"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEDone"];
                     };
                 };
                 /**
@@ -541,7 +652,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "text/event-stream": components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEDone"];
+                        "text/event-stream": components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEPlanUpdated"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEDone"];
                     };
                 };
                 401: components["responses"]["Unauthorized"];
@@ -1426,8 +1537,8 @@ export interface paths {
          *     tools advertised by configured operator (global) MCP servers, and the
          *     cached tools of the caller's per-user MCP servers (read from the
          *     workspace config cache; no live connections are made). Built-in tools
-         *     (`xizhi_*`, `webfetch`, executor, `luban_*`) and synthetic `invoke_*`
-         *     dispatch tools are excluded. Each entry follows the OpenAI
+         *     (`xizhi_*`, `webfetch`, executor, `luban_*`) and synthetic `spawn_subagent`
+         *     dispatch tool are excluded. Each entry follows the OpenAI
          *     function-tool shape (`type: function`) and carries a `server` field
          *     attributing it to its MCP source (an operator server name or a
          *     per-user server name). The per-user view is cache-based; freshness is
@@ -1471,7 +1582,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List the authenticated user's skills. */
+        /**
+         * List the authenticated user's skills.
+         * @description When `skill_market.url` is enabled, the response merges the caller's
+         *     market allowlist entries (additive `location: "skill_market"` +
+         *     `description` fields; local-first on name conflicts; a market failure
+         *     degrades to the local-only list with HTTP 200).
+         */
         get: {
             parameters: {
                 query?: never;
@@ -1596,7 +1713,10 @@ export interface components {
              * @description Whether a turn is currently running for this session
              *     (turn-detach-resume). True while the session's active-run claim
              *     exists; clients use it to offer resume (attach to
-             *     `turns/{run_id}/events`) and a cancel affordance.
+             *     `turns/{run_id}/events`) and a cancel affordance. The server
+             *     attempts terminal message persistence (and a bounded MySQL drain)
+             *     before releasing that claim, so a healthy transition to false
+             *     means the completed turn is visible in message history.
              */
             generating: boolean;
             /**
@@ -1630,7 +1750,9 @@ export interface components {
             /**
              * @description Whether a turn is currently running for this session
              *     (turn-detach-resume) — same active-run-claim semantics as the
-             *     session list. An unreadable claim degrades to false.
+             *     session list. The active-run claim is released only after terminal
+             *     message persistence has been attempted; an unreadable claim
+             *     degrades to false.
              */
             generating: boolean;
             /**
@@ -1660,13 +1782,15 @@ export interface components {
             /** @enum {string} */
             role: "user" | "assistant" | "tool" | "";
             /** @enum {string} */
-            event_type: "message" | "token" | "tool_call" | "tool_result" | "agent_start" | "agent_end" | "agent_error" | "reasoning";
+            event_type: "message" | "token" | "tool_call" | "tool_result" | "plan_updated" | "agent_start" | "agent_end" | "agent_error" | "reasoning";
             content: string;
             /** Format: uuid */
             trace_id: string;
-            /** @description Idempotency key minted at persistence time. Backs the Redis-first write-behind delivery: duplicate insert attempts of the same logical message collapse to one row. Rows carry either a deterministic "{trace_id}:{msg_index}" key (the mid-turn-compaction flush path, migration 013) or a UUID v7 (legacy write-behind minting). Null on rows written before migration 012. */
+            /** @description Idempotency key minted at persistence time. Backs the Redis-first write-behind delivery: duplicate insert attempts of the same logical message collapse to one row. Rows carry either a deterministic "{trace_id}:{msg_index}" key (the send-time user row, incremental closed-event batches, mid-turn compaction batches, and terminal suffix batches) or a UUID v7 (legacy write-behind minting). Null on rows written before migration 012. */
             client_msg_id?: string | null;
-            /** @description Sub-agent invocation run identity (subagent-run-identity capability): the id of the parent invoke_* tool_call that spawned the producing Run. Present only on rows emitted by a sub-agent (Chongzhi/Liang); Confucius top-level rows and user rows omit it, and rows written before migration 014 are null. Rows stay in arrival order (msg_time, msg_index) — consumers regroup interleaved same-agent rows by (agent, run_id) to recover each invocation's coherent output. */
+            /** @description Stable dynamic sub-agent instance identity. It survives resume and groups one thread across multiple run_id values. Present only on dynamic sub-agent rows; top-level/user rows and rows written before migration 016 are null. */
+            agent_instance_id?: string | null;
+            /** @description Sub-agent invocation run identity (subagent-run-identity capability): the id of the parent spawn_subagent tool_call that spawned the producing Run. Present only on rows emitted by a sub-agent (dynamic instances); Confucius top-level rows and user rows omit it, and rows written before migration 014 are null. Rows stay in arrival order (msg_time, msg_index) — consumers regroup interleaved same-agent rows by (agent, agent_instance_id) to recover each invocation's coherent output. */
             run_id?: string | null;
             /** Format: date-time */
             update_time: string;
@@ -1675,6 +1799,120 @@ export interface components {
             messages: components["schemas"]["Message"][];
             /** @description Opaque cursor for the next page. Absent on the final page. */
             next_page_token?: string;
+        };
+        SubAgentToolCall: {
+            /** @description Tool call id used for result pairing. */
+            id: string;
+            /** @description Tool function name. */
+            name: string;
+            /** @description Decoded tool-call arguments. Empty arguments are `{}`. */
+            arguments: {
+                [key: string]: unknown;
+            };
+        };
+        SubAgentTranscriptItem: {
+            /**
+             * @description Frontend transcript kind. Internal system messages and unknown
+             *     model roles are never exposed by this API.
+             * @enum {string}
+             */
+            type: "task" | "assistant" | "tool_result";
+            /** @description Task text, assistant answer text, or tool result text. */
+            content?: string;
+            /** @description Assistant reasoning text, when captured in the model-context delta. */
+            reasoning_content?: string;
+            /** @description Tool calls emitted by this assistant message. */
+            tool_calls?: components["schemas"]["SubAgentToolCall"][];
+            /** @description ID pairing a tool result with its assistant tool call. */
+            tool_call_id?: string;
+            /** @description Tool name on a tool-result item. */
+            name?: string;
+        };
+        SubAgentRunSummary: {
+            /** @description Stable sub-agent instance/thread identity. */
+            agent_instance_id: string;
+            /** @description One dispatch identity; equals the parent spawn tool_call id. */
+            run_id: string;
+            /** @description Predecessor run when this execution resumed an instance. */
+            previous_run_id?: string;
+            /** @description Linear execution number within the instance. */
+            run_no: number;
+            /** @description Stable sub-agent attribution label. */
+            name: string;
+            /** @enum {string} */
+            status: "completed" | "capped" | "error";
+            /** @description Number of messages in this run's persisted delta. */
+            message_count: number;
+            /** Format: date-time */
+            started_at: string;
+            /** Format: date-time */
+            finished_at: string;
+        };
+        /**
+         * @example {
+         *       "runs": [
+         *         {
+         *           "agent_instance_id": "w-9f2d4c",
+         *           "run_id": "call_019glegacy",
+         *           "run_no": 1,
+         *           "name": "researcher#w-9f2d4c",
+         *           "status": "completed",
+         *           "message_count": 4,
+         *           "started_at": "2026-09-07T01:00:00Z",
+         *           "finished_at": "2026-09-07T01:02:00Z"
+         *         }
+         *       ]
+         *     }
+         */
+        SubAgentRunListResponse: {
+            runs: components["schemas"]["SubAgentRunSummary"][];
+        };
+        /**
+         * @example {
+         *       "agent_instance_id": "w-9f2d4c",
+         *       "run_id": "call_019glegacy",
+         *       "previous_run_id": "call_019gprevious",
+         *       "run_no": 2,
+         *       "name": "researcher#w-9f2d4c",
+         *       "status": "completed",
+         *       "message_count": 3,
+         *       "started_at": "2026-09-07T01:05:00Z",
+         *       "finished_at": "2026-09-07T01:07:00Z",
+         *       "transcript": [
+         *         {
+         *           "type": "task",
+         *           "content": "Continue the investigation."
+         *         },
+         *         {
+         *           "type": "assistant",
+         *           "content": "I found the regression.",
+         *           "reasoning_content": "Compare the two call sites first.",
+         *           "tool_calls": [
+         *             {
+         *               "id": "call_tool_1",
+         *               "name": "executor",
+         *               "arguments": {
+         *                 "command": "rg regression"
+         *               }
+         *             }
+         *           ]
+         *         },
+         *         {
+         *           "type": "tool_result",
+         *           "tool_call_id": "call_tool_1",
+         *           "name": "executor",
+         *           "content": "two matches"
+         *         }
+         *       ]
+         *     }
+         */
+        SubAgentRunDetail: components["schemas"]["SubAgentRunSummary"] & {
+            /**
+             * @description Sanitized frontend transcript for this terminal run. New rows
+             *     contain only that run's delta; a legacy full-snapshot row
+             *     contains the retained instance baseline.
+             */
+            transcript: components["schemas"]["SubAgentTranscriptItem"][];
         };
         SendMessageRequest: {
             /** @description User message text (must be non-empty). */
@@ -1716,8 +1954,10 @@ export interface components {
             type: "agent_start";
             agent: string;
             meta?: {
-                /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
+                /** @description Present only on sub-agent events; the parent spawn_subagent tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description Stable sub-agent instance identity; survives resume and groups threads across parent_tool_call_id values. */
+                agent_instance_id?: string;
                 /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
                 run_id?: string;
             };
@@ -1729,8 +1969,10 @@ export interface components {
             /** @description Incremental text token. */
             content: string;
             meta?: {
-                /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
+                /** @description Present only on sub-agent events; the parent spawn_subagent tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description Stable sub-agent instance identity; survives resume and groups threads across parent_tool_call_id values. */
+                agent_instance_id?: string;
                 /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
                 run_id?: string;
             };
@@ -1742,8 +1984,10 @@ export interface components {
             /** @description Incremental reasoning/thinking token. */
             content: string;
             meta?: {
-                /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
+                /** @description Present only on sub-agent events; the parent spawn_subagent tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description Stable sub-agent instance identity; survives resume and groups threads across parent_tool_call_id values. */
+                agent_instance_id?: string;
                 /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
                 run_id?: string;
             };
@@ -1760,8 +2004,10 @@ export interface components {
                 args?: {
                     [key: string]: unknown;
                 };
-                /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
+                /** @description Present only on sub-agent events; the parent spawn_subagent tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description Stable sub-agent instance identity; survives resume and groups threads across parent_tool_call_id values. */
+                agent_instance_id?: string;
                 /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
                 run_id?: string;
             };
@@ -1771,8 +2017,9 @@ export interface components {
          *     via `meta.tool_call_id`. `content` is the same string fed back to the
          *     model as the role="tool" message body: for registry tools the uniform
          *     status envelope `{"status":0,"result":...}` / `{"status":1,"error":...}`;
-         *     for invoke_* sub-agent dispatches, the sub-agent's output (or error text)
-         *     verbatim. The status envelope is the sole channel for a registry-tool
+         *     for spawn_subagent dispatches, the sub-agent's output (or error text)
+         *     followed by a machine-readable `agent_id` and `status` suffix
+         *     (`completed`, `capped`, or `error`). The status envelope is the sole channel for a registry-tool
          *     failure: no `agent_error` event is emitted for tool errors (the frontend
          *     renders tool errors from `content`'s `status` field).
          */
@@ -1785,19 +2032,61 @@ export interface components {
             meta?: {
                 /** @description Matches the meta.tool_call_id of the originating tool_call event. */
                 tool_call_id: string;
-                /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
+                /** @description Present only on sub-agent events; the parent spawn_subagent tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description Stable sub-agent instance identity; survives resume and groups threads across parent_tool_call_id values. */
+                agent_instance_id?: string;
                 /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
                 run_id?: string;
             };
+        };
+        /**
+         * @description Host-accepted semantic plan snapshot submitted through Confucius's
+         *     root-only `update_plan` tool. The event is emitted between the
+         *     `update_plan` tool_call and tool_result and before any same-round
+         *     sub-agent or registry activity. `content` is canonical JSON (encoded as
+         *     a string) with the SSEPlanSnapshot shape so it survives message
+         *     persistence. Multiple steps may simultaneously be `in_progress` for
+         *     parallel dispatch.
+         */
+        SSEPlanUpdated: {
+            /** @enum {string} */
+            type: "plan_updated";
+            /** @description Root orchestrator label (normally Confucius). */
+            agent: string;
+            /**
+             * @description Canonical JSON-encoded SSEPlanSnapshot.
+             * @example {"revision":1,"steps":[{"step":"Inspect stream events","status":"completed"},{"step":"Design plan state","status":"in_progress"}],"explanation":"Investigation finished."}
+             */
+            content: string;
+            meta: {
+                /** @description Host-assigned snapshot revision; ignored during persistence in favor of the canonical content. */
+                revision: number;
+                /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
+                run_id?: string;
+            };
+        };
+        SSEPlanSnapshot: {
+            /** @description Monotonic per-turn revision assigned by the host. */
+            revision: number;
+            steps: components["schemas"]["SSEPlanStep"][];
+            /** @description Optional reason for the plan change. */
+            explanation?: string;
+        };
+        SSEPlanStep: {
+            step: string;
+            /** @enum {string} */
+            status: "pending" | "in_progress" | "completed";
         };
         SSEAgentEnd: {
             /** @enum {string} */
             type: "agent_end";
             agent: string;
             meta?: {
-                /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
+                /** @description Present only on sub-agent events; the parent spawn_subagent tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description Stable sub-agent instance identity; survives resume and groups threads across parent_tool_call_id values. */
+                agent_instance_id?: string;
                 /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
                 run_id?: string;
             };
@@ -1807,9 +2096,10 @@ export interface components {
          *     failures (those are carried solely by the SSEToolResult status envelope).
          *     `meta.error_code` is one of: `llm_error` (LLM call failed), `unknown_tool`
          *     (no tool registry / unknown sub-agent tool), `bad_args` (malformed
-         *     sub-agent invoke arguments), `retry` (in-progress sub-agent retry, paired
+         *     sub-agent spawn argument error), `retry` (in-progress sub-agent retry, paired
          *     with `meta.retry=true`), `round_cap_exhausted` (round-cap wrap-up round
-         *     produced no content).
+         *     produced no content), `budget_exhausted` (total/depth spawn budget), or
+         *     `budget_timeout` (FIFO concurrency-slot wait timed out).
          */
         SSEAgentError: {
             /** @enum {string} */
@@ -1819,8 +2109,10 @@ export interface components {
             content: string;
             meta?: {
                 error_code?: string;
-                /** @description Present only on sub-agent events; the parent invoke_* tool_call id (run identity). */
+                /** @description Present only on sub-agent events; the parent spawn_subagent tool_call id (run identity). */
                 parent_tool_call_id?: string;
+                /** @description Stable sub-agent instance identity; survives resume and groups threads across parent_tool_call_id values. */
+                agent_instance_id?: string;
                 /** @description The owning turn run id; present on every event frame (turn-detach-resume). */
                 run_id?: string;
             };
@@ -1833,12 +2125,13 @@ export interface components {
                  * @description Per-turn token-usage breakdown. Authoritative shape (turn-cost-tracking
                  *     spec): `{total, by_agent, meta}`.
                  *
-                 *     `total` is the aggregate turn usage. `by_agent` carries the per-agent
-                 *     attribution keyed by agent display name (always includes "Confucius",
-                 *     plus one entry per dispatched sub-agent). `meta` records turn-level
-                 *     orchestration facts: `parallel` (true when any assistant round
-                 *     dispatched >=2 tool_calls) and `sub_agent_invocations` (the invoke_*
-                 *     tool names dispatched this turn, in dispatch order, deduplicated).
+                 *     `total` is the aggregate turn usage. `by_agent` carries per-agent
+                 *     attribution keyed by dynamic instance label (always includes
+                 *     "Confucius", plus one label per spawned instance; resume reuses the
+                 *     same label/key). `meta` records turn-level orchestration facts:
+                 *     `parallel` (true when any assistant round dispatched >=2 tool_calls)
+                 *     and `sub_agent_invocations` (objects carrying stable instance id,
+                 *     parent instance id, and dispatch order).
                  *
                  *     Legacy flat top-level fields (`prompt_tokens`, `completion_tokens`,
                  *     `total_tokens`, `reasoning_tokens`) have been MOVED under `total`;
@@ -1847,13 +2140,13 @@ export interface components {
                  */
                 usage: {
                     total: components["schemas"]["SSEUsageTokens"];
-                    /** @description Per-agent usage keyed by agent display name (Confucius, Chongzhi, Liang). */
+                    /** @description Usage keyed by dynamic instance labels such as name#shortid or subagent-shortid; resume reuses one key. */
                     by_agent: {
                         [key: string]: components["schemas"]["SSEUsageTokens"];
                     };
                     meta: {
-                        /** @description invoke_* tool names dispatched this turn, dispatch order, deduplicated. */
-                        sub_agent_invocations: string[];
+                        /** @description Every spawn dispatch this turn, in dispatch order; resume is a new entry reusing its instance id. */
+                        sub_agent_invocations: components["schemas"]["SSESubAgentInvocation"][];
                         /** @description True when any assistant round dispatched >=2 tool_calls. */
                         parallel: boolean;
                     };
@@ -1861,6 +2154,14 @@ export interface components {
                     error?: string;
                 };
             };
+        };
+        SSESubAgentInvocation: {
+            /** @description Stable dynamic sub-agent instance identity. */
+            agent_instance_id: string;
+            /** @description Empty for root dispatches; otherwise the spawning sub-agent instance. */
+            parent_instance_id?: string;
+            /** @description One-based dispatch order within the turn. */
+            order: number;
         };
         SSEUsageTokens: {
             prompt_tokens: number;
@@ -2011,6 +2312,15 @@ export interface components {
             size: number;
             /** Format: date-time */
             update_time: string;
+            /**
+             * @description Present ONLY on skill-market entries (skill-market capability):
+             *     `"skill_market"`. Local (user-directory) entries omit the field and
+             *     serialize exactly as before the capability. A name conflict
+             *     between a local skill and a market skill resolves local-first.
+             */
+            location?: string;
+            /** @description Present ONLY on skill-market entries — the description from the market API (the disk SKILL.md is not consulted). */
+            description?: string;
         };
         SkillsResponse: {
             skills: components["schemas"]["SkillEntry"][];

@@ -11,6 +11,9 @@ export interface AgentMessageProps {
   content: string;
   reasoning?: string;
   timeline: MessageTimelineItem[];
+  // 动态子 Agent 的稳定实例身份；有值且位于已落库会话时，展示 per-run 懒加载面板。
+  agentInstanceId?: string;
+  sessionId?: string | null;
   status: AgentStatus;
   // 是否为仍在输出的活动流式段（running/tool_call）；持久化块与已结束段为 false。
   isLive?: boolean;
@@ -46,6 +49,8 @@ export const AgentMessage = memo(function AgentMessage(props: AgentMessageProps)
       agent={props.agent}
       reasoning={props.reasoning ?? ''}
       timeline={props.timeline}
+      agentInstanceId={props.agentInstanceId}
+      sessionId={props.sessionId}
       status={props.status}
       isLive={!!props.isLive}
     />

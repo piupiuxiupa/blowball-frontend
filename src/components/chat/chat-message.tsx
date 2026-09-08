@@ -4,6 +4,7 @@ import type { MessageTimelineItem } from '@/lib/message-timeline';
 import { AgentMessage } from './agent-message';
 
 interface ChatMessageProps {
+  sessionId?: string | null;
   block: {
     id: string;
     agent: string;
@@ -11,6 +12,7 @@ interface ChatMessageProps {
     content: string;
     reasoning?: string;
     timeline: MessageTimelineItem[];
+    agentInstanceId?: string;
     isError?: boolean;
   };
   navigationHighlighted?: boolean;
@@ -19,6 +21,7 @@ interface ChatMessageProps {
 // 持久化消息块适配器：把 MessageBlock 归约为 AgentMessage 的统一形状后按 agent 派发。
 // 持久化块恒为已完成态（status idle / error，isLive false），与流式段共用同一组展示组件。
 export const ChatMessage = memo(function ChatMessage({
+  sessionId,
   block,
   navigationHighlighted,
 }: ChatMessageProps) {
@@ -30,6 +33,8 @@ export const ChatMessage = memo(function ChatMessage({
       content={block.content}
       reasoning={block.reasoning}
       timeline={block.timeline}
+      agentInstanceId={block.agentInstanceId || undefined}
+      sessionId={sessionId}
       status={status}
       isLive={false}
       navigationHighlighted={navigationHighlighted}
