@@ -555,7 +555,7 @@ export function MessageList() {
         ref={scrollRef}
         onScroll={handleScroll}
         className={cn(
-          'h-full py-4 pr-4',
+          'h-full py-3 pr-4',
           !isLoading && userAnchors.length >= 2 ? 'pl-[46px]' : 'pl-4'
         )}
       >
@@ -601,7 +601,7 @@ export function MessageList() {
                     transform: `translateY(${virtualRow.start}px)`,
                   }}
                 >
-                  <div className={cn(tightTop ? 'pb-2 pt-0' : 'py-2')}>
+                  <div className={cn(tightTop ? 'pb-1.5 pt-0' : 'py-1.5')}>
                     {item.kind === 'block' ? (
                       <ChatMessage
                         sessionId={activeSessionId}

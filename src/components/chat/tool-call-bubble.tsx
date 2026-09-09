@@ -1,5 +1,6 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, Wrench, AlertCircle } from 'lucide-react';
+import { useUIStore } from '@/stores/ui-store';
 import { cn } from '@/lib/utils';
 
 export interface ToolArg {
@@ -178,12 +179,11 @@ function formatValue(value: unknown): { text: string; block: boolean } {
 }
 
 /**
- * 把 tool_call 的 content（通常是 JSON）解析成「工具名 + 参数键值」，
- * 以一张玻璃质感卡片呈现，替代直接堆原始 JSON 文本。
+ * 把 tool_call 的 content（通常是 JSON）解析成「工具名 + 参数键值」。
  *
- * 默认折叠：仅显示「工具调用/工具结果 · 名字」头部，点击展开查看参数，避免长参数列表
- * 撑开正文（尤其 Confucius 连续的 invoke_* 调用）。无参数的工具调用不提供展开。
- * 工具执行出错（output.status === 1）时整卡渲染为淡红色，头部图标切换为警告。
+ * 弱化显示（chat-visual-hierarchy）：不再是玻璃卡片，而是正文中的一行注脚——
+ * 默认折叠为「工具调用/工具结果 · 名字 · 完成/失败」单行，点击展开查看参数与结果。
+ * 无参数的工具调用不提供展开。出错（output.status === 1）时仅文字标红，不加卡片底色。
  */
 export const ToolCallBubble = memo(function ToolCallBubble({
   raw,
@@ -202,6 +202,13 @@ export const ToolCallBubble = memo(function ToolCallBubble({
   const isResult = call.isResult && result === undefined;
   const isError = resultInfo?.isError ?? call.isError;
   const [collapsed, setCollapsed] = useState(true);
+  const expandAll = useUIStore((s) => s.contentExpandAll);
+  const collapseVersion = useUIStore((s) => s.contentCollapseVersion);
+  // 全局「展开全部/收起全部」覆盖：collapseVersion 变化（每次点击全局按钮）
+  // 清洗本地开合状态，统一跟随 expandAll；null（未干预）保持默认折叠。
+  useEffect(() => {
+    if (expandAll !== null) setCollapsed(!expandAll);
+  }, [expandAll, collapseVersion]);
   const hasDetails = args.length > 0 || (resultInfo?.args.length ?? 0) > 0;
 
   const headerLabel = (
@@ -216,12 +223,12 @@ export const ToolCallBubble = memo(function ToolCallBubble({
       </span>
       {name && (
         <>
-          <span className="text-foreground/40">·</span>
-          <span className="truncate font-mono text-foreground">{name}</span>
+          <span className="text-muted-foreground/50">·</span>
+          <span className="truncate font-mono">{name}</span>
         </>
       )}
       {result !== undefined && (
-        <span className={cn('ml-1', isError ? 'text-destructive' : 'text-muted-foreground/70')}>
+        <span className={cn('ml-1', isError ? 'text-destructive' : 'text-muted-foreground/60')}>
           {isError ? '失败' : '完成'}
         </span>
       )}
@@ -229,39 +236,31 @@ export const ToolCallBubble = memo(function ToolCallBubble({
   );
 
   return (
-    <div
-      className={cn(
-        'overflow-hidden rounded-xl border backdrop-blur-md',
-        isError ? 'border-red-200 bg-red-50/60' : 'border-white/50 bg-white/40',
-      )}
-    >
+    <div>
       {hasDetails ? (
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
           aria-expanded={!collapsed}
-          className={cn(
-            'flex w-full cursor-pointer items-center gap-1.5 px-3 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-black/[0.03]',
-            !collapsed && (isError ? 'border-b border-red-200/70' : 'border-b border-white/40')
-          )}
+          className="flex w-full cursor-pointer items-center gap-1.5 rounded-lg px-1.5 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-black/[0.03]"
         >
           {headerLabel}
           <ChevronDown
             className={cn(
-              'ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+              'ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground/70 transition-transform',
               !collapsed && 'rotate-180'
             )}
           />
         </button>
       ) : (
-        <div className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted-foreground">
+        <div className="flex items-center gap-1.5 px-1.5 py-1 text-xs text-muted-foreground">
           {headerLabel}
-          <span className="ml-auto text-muted-foreground/70">无详情</span>
+          <span className="ml-auto text-muted-foreground/50">无详情</span>
         </div>
       )}
 
       {hasDetails && !collapsed && (
-        <div className="space-y-3 px-3 py-2">
+        <div className="space-y-3 border-l-2 border-foreground/10 py-1 pl-3 ml-1.5">
           {args.length > 0 && (
             <section className="space-y-1.5">
               <h4 className="text-xs font-medium text-muted-foreground">参数</h4>
@@ -275,7 +274,7 @@ export const ToolCallBubble = memo(function ToolCallBubble({
                         className={cn(
                           'text-xs text-foreground',
                           block
-                            ? 'whitespace-pre-wrap break-words rounded-lg bg-black/[0.04] px-2 py-1 font-mono leading-relaxed'
+                            ? 'max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/[0.04] px-2 py-1 font-mono leading-relaxed'
                             : 'break-words font-mono',
                         )}
                       >
@@ -302,7 +301,7 @@ export const ToolCallBubble = memo(function ToolCallBubble({
                         className={cn(
                           'text-xs text-foreground',
                           block
-                            ? 'whitespace-pre-wrap break-words rounded-lg bg-black/[0.04] px-2 py-1 font-mono leading-relaxed'
+                            ? 'max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/[0.04] px-2 py-1 font-mono leading-relaxed'
                             : 'break-words font-mono',
                         )}
                       >

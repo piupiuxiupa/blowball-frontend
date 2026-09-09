@@ -1,9 +1,10 @@
-import { memo, useState, type ReactNode } from 'react';
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Loader2, Wrench, AlertCircle, Check, ChevronDown, Lightbulb } from 'lucide-react';
 import { useUIStore, type AgentStatus } from '@/stores/ui-store';
 import { MarkdownRenderer } from './markdown-renderer';
 import { OrderedMessageContent } from './ordered-message-content';
 import { SubAgentRunTranscripts } from './sub-agent-run-transcripts';
+import { useGlobalDetails } from './use-global-details';
 import type { MessageTimelineItem } from '@/lib/message-timeline';
 
 interface CollapsibleSubAgentProps {
@@ -83,43 +84,64 @@ export const CollapsibleSubAgent = memo(function CollapsibleSubAgent({
   );
   const setPersistedExpanded = useUIStore((s) => s.setSubAgentBlockExpanded);
   const [localExpanded, setLocalExpanded] = useState(false);
-  const collapsed = blockId ? !persistedExpanded : !localExpanded;
+  const expandAll = useUIStore((s) => s.contentExpandAll);
+  const collapseVersion = useUIStore((s) => s.contentCollapseVersion);
+  // 全局「展开全部/收起全部」覆盖：collapseVersion 变化（每次点击全局按钮）时
+  // 清洗本地态，让块重新跟随 expandAll。持久化块的 ui-store 记录已在
+  // toggleContentExpandAll 侧清空，这里只重置流式段的本地态。
+  useEffect(() => {
+    if (expandAll !== null) setLocalExpanded(expandAll);
+  }, [expandAll, collapseVersion]);
+  const globalOverride = expandAll !== null;
+  const collapsed = globalOverride
+    ? !expandAll
+    : blockId
+      ? !persistedExpanded
+      : !localExpanded;
   const toggleCollapsed = () => {
-    if (blockId && sessionId) {
-      setPersistedExpanded(sessionId, blockId, !persistedExpanded);
-    } else {
+    // 全局覆盖生效期间，单块点击只翻转本地态，不写持久化记录（下次全局切换
+    // 会清洗），避免持久化记录与全局态互相打架。
+    if (globalOverride || !blockId || !sessionId) {
       setLocalExpanded((current) => !current);
+      return;
     }
+    setPersistedExpanded(sessionId, blockId, !persistedExpanded);
   };
+  const reasoningRef = useRef<HTMLDetailsElement>(null);
+  useGlobalDetails(reasoningRef);
 
   return (
-    <div className="glass space-y-1 rounded-2xl rounded-bl-md px-3.5 py-2.5 text-sm">
+    // 弱化子 agent 显示（chat-visual-hierarchy）：去 glass 气泡，降级为细行注脚。
+    // 默认折叠仍保留（design D5），展开内容用细竖线缩进，与主回答形成层级差。
+    <div className="text-sm">
       <button
         type="button"
         onClick={toggleCollapsed}
-        className="flex w-full items-center gap-2 text-left"
+        className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-black/[0.03]"
         aria-expanded={!collapsed}
       >
-        <span className="text-xs font-medium text-foreground">{agent}</span>
+        <span className="font-medium text-muted-foreground">{agent}</span>
         <span className="flex items-center gap-1">
           <StatusIndicator status={status} />
         </span>
         <ChevronDown
-          className={`ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
+          className={`ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground/70 transition-transform ${
             collapsed ? '' : 'rotate-180'
           }`}
         />
       </button>
 
       {!collapsed && (
-        <div className="space-y-2 pt-1">
+        <div className="space-y-2 border-l-2 border-foreground/10 py-1 pl-3 ml-1.5 mt-0.5">
           {reasoning && (
-            <details className="rounded-xl border border-white/50 bg-white/40 px-2.5 py-1.5 backdrop-blur-md">
-              <summary className="flex cursor-pointer list-none items-center gap-1 text-xs text-muted-foreground">
+            // 与 BareConfucius 一致的弱化样式：细竖线 + 灰字一行，默认折叠。
+            // 接入全局「展开全部/收起全部」（useGlobalDetails）。
+            <details ref={reasoningRef} className="border-l-2 border-foreground/10 pl-2.5">
+              <summary className="flex cursor-pointer list-none items-center gap-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
                 <Lightbulb className="h-3 w-3" />
                 <span>思考过程</span>
               </summary>
-              <div className="prose prose-sm max-w-none pt-1 text-muted-foreground">
+              <div className="prose prose-sm max-w-none max-h-64 overflow-auto pt-1 text-xs text-muted-foreground">
                 <MarkdownRenderer>{reasoning}</MarkdownRenderer>
               </div>
             </details>

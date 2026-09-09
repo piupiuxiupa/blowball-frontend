@@ -3,11 +3,7 @@ import { CheckCircle2, Circle, CircleDot, ListChecks } from 'lucide-react';
 import type { PlanSnapshot } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
-interface PlanSnapshotCardProps {
-  raw: string;
-}
-
-function parseSnapshot(raw: string): PlanSnapshot | null {
+export function parseSnapshot(raw: string): PlanSnapshot | null {
   try {
     const parsed = JSON.parse(raw) as PlanSnapshot;
     if (
@@ -28,7 +24,7 @@ function parseSnapshot(raw: string): PlanSnapshot | null {
   }
 }
 
-function StepIcon({ status }: { status: PlanSnapshot['steps'][number]['status'] }) {
+export function StepIcon({ status }: { status: PlanSnapshot['steps'][number]['status'] }) {
   if (status === 'completed') {
     return <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />;
   }
@@ -38,31 +34,17 @@ function StepIcon({ status }: { status: PlanSnapshot['steps'][number]['status'] 
   return <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />;
 }
 
-function statusText(status: PlanSnapshot['steps'][number]['status']) {
+export function statusText(status: PlanSnapshot['steps'][number]['status']) {
   if (status === 'completed') return '已完成';
   if (status === 'in_progress') return '进行中';
   return '待处理';
 }
 
-// plan_updated 的语义计划卡。保留在事件 timeline 中而不是只显示“最新计划”，
-// 让流式与历史都按到达顺序呈现每次修订；多个 in_progress 允许并行任务共存。
-export const PlanSnapshotCard = memo(function PlanSnapshotCard({ raw }: PlanSnapshotCardProps) {
-  const snapshot = parseSnapshot(raw);
-  if (!snapshot) {
-    return (
-      <div className="rounded-xl border border-white/50 bg-white/40 px-3 py-2 text-xs text-muted-foreground">
-        计划数据无法解析
-      </div>
-    );
-  }
-
+// 步骤列表渲染抽为共享片段：消息流内的完整计划卡与外置 PlanStatusBar 的
+// 展开浮层共用同一份步骤 UI，避免两处各维护一份状态图标/文案映射。
+export function PlanStepList({ snapshot }: { snapshot: PlanSnapshot }) {
   return (
-    <section className="rounded-xl border border-white/50 bg-white/40 px-3 py-2.5 backdrop-blur-md">
-      <header className="flex items-center gap-2 text-xs font-medium text-foreground">
-        <ListChecks className="h-3.5 w-3.5 text-primary" />
-        <span>执行计划</span>
-        <span className="text-muted-foreground">#{snapshot.revision}</span>
-      </header>
+    <>
       <ol className="mt-2 space-y-1.5">
         {snapshot.steps.map((step, index) => (
           <li key={`${index}-${step.step}`} className="flex min-w-0 items-start gap-2">
@@ -86,6 +68,30 @@ export const PlanSnapshotCard = memo(function PlanSnapshotCard({ raw }: PlanSnap
           {snapshot.explanation}
         </p>
       )}
+    </>
+  );
+}
+
+// plan_updated 的语义计划卡。保留在事件 timeline 中而不是只显示“最新计划”，
+// 让流式与历史都按到达顺序呈现每次修订；多个 in_progress 允许并行任务共存。
+export const PlanSnapshotCard = memo(function PlanSnapshotCard({ raw }: { raw: string }) {
+  const snapshot = parseSnapshot(raw);
+  if (!snapshot) {
+    return (
+      <div className="rounded-xl border border-white/50 bg-white/40 px-3 py-2 text-xs text-muted-foreground">
+        计划数据无法解析
+      </div>
+    );
+  }
+
+  return (
+    <section className="rounded-xl border border-white/50 bg-white/40 px-3 py-2.5 backdrop-blur-md">
+      <header className="flex items-center gap-2 text-xs font-medium text-foreground">
+        <ListChecks className="h-3.5 w-3.5 text-primary" />
+        <span>执行计划</span>
+        <span className="text-muted-foreground">#{snapshot.revision}</span>
+      </header>
+      <PlanStepList snapshot={snapshot} />
     </section>
   );
 });

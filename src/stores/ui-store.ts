@@ -79,6 +79,14 @@ interface UIState {
   // 自动合上。按消息块 id（agent-<rowId>，持久化行 id 稳定）记录；键空间有界
   // ——仅用户显式展开的实例。
   expandedSubAgentBlocks: Record<string, Record<string, true>>;
+  // 全局「展开全部/收起全部」覆盖信号（chat-visual-hierarchy）：
+  //   null  = 未干预，各块用自身默认（长文夹高、思考/工具/子agent 折叠）；
+  //   true  = 全部展开；false = 全部收起。
+  // collapseVersion 单调递增，每次点击 +1——组件用它做 key/重置锚点，
+  // 把本地折叠态整体清洗一遍（虚拟列表里已卸载的块也随下次挂载读取新值）。
+  // 已卸载的持久化子 agent 块折叠态（expandedSubAgentBlocks）在切换时直接清空。
+  contentExpandAll: boolean | null;
+  contentCollapseVersion: number;
 
   setActiveSession: (id: string | null) => void;
   setActiveFile: (path: string | null) => void;
@@ -87,7 +95,7 @@ interface UIState {
   setPreviewVersionId: (id: string | null) => void;
   toggleSidebar: () => void;
   toggleShowHiddenFiles: () => void;
-  setTurnRun: (sessionId: string, runId: string | null) => void;
+  toggleContentExpandAll: () => void;  setTurnRun: (sessionId: string, runId: string | null) => void;
   setModelSelection: (model: string | null, effort: ReasoningEffort | null) => void;
   setSubAgentBlockExpanded: (sessionId: string, blockId: string, expanded: boolean) => void;
   startAgentSegment: (sessionId: string, agent: string, route: SegmentRoute) => void;
@@ -184,6 +192,8 @@ export const useUIStore = create<UIState>((set) => ({
   selectedModel: null,
   selectedEffort: null,
   expandedSubAgentBlocks: {},
+  contentExpandAll: null,
+  contentCollapseVersion: 0,
 
   setActiveSession: (id) => set({ activeSessionId: id }),
   // 切换活动文件时一并退出版本预览（预览绑定的是旧文件的历史版本）。
@@ -193,6 +203,15 @@ export const useUIStore = create<UIState>((set) => ({
   setPreviewVersionId: (id) => set({ previewVersionId: id }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   toggleShowHiddenFiles: () => set((state) => ({ showHiddenFiles: !state.showHiddenFiles })),
+  // 点击循环：未干预/已收起 → 全部展开；已展开 → 全部收起。每次切换递增
+  // collapseVersion 并清空持久化子 agent 展开记录——所有块的本地折叠态
+  // 以新版本号为锚点整体重置，包括虚拟列表里已卸载、尚未挂载的块。
+  toggleContentExpandAll: () =>
+    set((state) => ({
+      contentExpandAll: state.contentExpandAll === true ? false : true,
+      contentCollapseVersion: state.contentCollapseVersion + 1,
+      expandedSubAgentBlocks: {},
+    })),
 
   // turn 订阅登记：runId 非空登记（取消目标/禁用判据/attach 防重），null 清除（终局/回落）。
   setTurnRun: (sessionId, runId) =>

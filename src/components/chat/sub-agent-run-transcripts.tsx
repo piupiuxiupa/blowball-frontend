@@ -1,5 +1,5 @@
-import { memo, useMemo, useState } from 'react';
-import { AlertCircle, CheckCircle2, ChevronDown, Clock3, Loader2, Sparkles } from 'lucide-react';
+import { memo, useMemo, useRef, useState } from 'react';
+import { AlertCircle, CheckCircle2, ChevronDown, Clock3, Lightbulb, Loader2, Sparkles } from 'lucide-react';
 import { useSubAgentRunDetail, useSubAgentRuns } from '@/hooks/use-subagent-runs';
 import type {
   SubAgentRunDetail,
@@ -9,6 +9,7 @@ import type {
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from './markdown-renderer';
 import { ToolCallBubble } from './tool-call-bubble';
+import { useGlobalDetails } from './use-global-details';
 
 const dateTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
   month: '2-digit',
@@ -41,6 +42,25 @@ function findResult(
   return transcript.slice(startIndex + 1).find((item) => item.tool_call_id === toolCallId);
 }
 
+// run transcript 内的思考块：抽成独立组件以便挂 useGlobalDetails（ref 需要
+// 稳定的宿主组件，map 回调里不能直接调 hook）。
+const TranscriptReasoning = memo(function TranscriptReasoning({ content }: { content: string }) {
+  const ref = useRef<HTMLDetailsElement>(null);
+  useGlobalDetails(ref);
+  return (
+    // 与消息流一致的弱化样式：细竖线 + 灰字一行，默认折叠（原常显灰底块）。
+    <details ref={ref} className="border-l-2 border-foreground/10 pl-2.5">
+      <summary className="flex cursor-pointer list-none items-center gap-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
+        <Lightbulb className="h-3 w-3" />
+        <span>思考</span>
+      </summary>
+      <div className="max-h-64 overflow-auto whitespace-pre-wrap break-words pt-1 text-xs text-muted-foreground">
+        {content}
+      </div>
+    </details>
+  );
+});
+
 const TranscriptView = memo(function TranscriptView({ detail }: { detail: SubAgentRunDetail }) {
   return (
     <div className="space-y-2">
@@ -65,12 +85,7 @@ const TranscriptView = memo(function TranscriptView({ detail }: { detail: SubAge
         if (item.type === 'assistant') {
           return (
             <div key={`assistant-${index}`} className="space-y-2">
-              {item.reasoning_content && (
-                <div className="rounded-xl bg-black/[0.035] px-2.5 py-2 text-xs text-muted-foreground">
-                  <div className="mb-1 font-medium">思考</div>
-                  <div className="whitespace-pre-wrap break-words">{item.reasoning_content}</div>
-                </div>
-              )}
+              {item.reasoning_content && <TranscriptReasoning content={item.reasoning_content} />}
               {item.content && (
                 <div className="prose prose-sm max-w-none">
                   <MarkdownRenderer>{item.content}</MarkdownRenderer>
