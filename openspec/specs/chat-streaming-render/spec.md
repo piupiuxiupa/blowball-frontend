@@ -52,6 +52,8 @@
 
 活跃 turn 期间，消息列表 SHALL 按 `trace_id` 隐藏该 turn 已经由后端流式落库的助手事件行，仅以当前 `streamingSegments` 中的事件序列渲染该 turn；用户消息 SHALL 保持可见。终局确认历史完整落库并清空流式分段后，再渲染持久化历史，避免“半截历史 + 重放/继续流式”造成重复内容。
 
+子 Agent 的 run 历史懒加载（chat-message-render 的 placeholder 明细区）SHALL NOT 挂载在流式段上：段本身就是该次执行的实时输出，且进行中的 run 尚无终态行可查；懒加载只在持久化块（历史视图）展开时发生。turn 终局 reconcile 清空流式分段后，系统 SHALL 失效该会话的 run 列表缓存，使本 turn 子 Agent 刚落库的终态 run 在气泡展开时立即可见。
+
 #### Scenario: 流式中按 agent 分隔展示
 - **WHEN** 一个回合内先后出现 Confucius 与 Chongzhi 的 `agent_start`/`token` 事件
 - **THEN** 流式渲染区为每个 agent 各自呈现一个独立项，二者内容不合并到同一渲染项
@@ -87,3 +89,11 @@
 #### Scenario: 流式进行中判据
 - **WHEN** 任一活动段状态为 `running` 或 `tool_call`
 - **THEN** 会话被判定为流式进行中；当全部段为 `idle`/`error` 时判定为非流式
+
+#### Scenario: 流式段不挂 run 历史懒加载
+- **WHEN** 子 Agent 流式段正在输出或本轮已结束但尚未 reconcile 清空
+- **THEN** 段内不发起 runs/transcript 请求；明细在持久化历史接管后由气泡展开触发
+
+#### Scenario: turn 终局后 run 立即可展开
+- **WHEN** 一个含子 Agent 调用的 turn 完成 reconcile（历史确认落库、分段清空）
+- **THEN** 该会话的 run 列表缓存被失效，用户随即展开对应气泡即可看到刚结束的那次执行
