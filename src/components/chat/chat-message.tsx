@@ -37,6 +37,7 @@ export const ChatMessage = memo(function ChatMessage({
       sessionId={sessionId}
       status={status}
       isLive={false}
+      blockId={block.id}
       navigationHighlighted={navigationHighlighted}
     />
   );

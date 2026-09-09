@@ -155,8 +155,56 @@ function RunDetail({
   );
 }
 
-// 子 Agent 实例的 per-run 懒加载面板：先取轻量 run 列表，用户展开某个 run 时才请求
-// 该次执行的 transcript delta。列表天然不包含当前进行中的 run，实时输出仍由 SSE 段渲染。
+// 单次执行的展开主体：唯一 run 时 initialExpanded 直出明细——placeholder 模式下
+// 这个气泡的内容就是它，不让用户多点一次；多 run（resume 续跑）时退为逐条手开。
+function RunTranscript({
+  sessionId,
+  agentInstanceId,
+  run,
+  initialExpanded,
+}: {
+  sessionId: string;
+  agentInstanceId: string;
+  run: SubAgentRunSummary;
+  initialExpanded?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(!!initialExpanded);
+
+  return (
+    <div className="rounded-lg bg-white/35">
+      <button
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left"
+        aria-expanded={expanded}
+      >
+        <StatusIcon status={run.status} />
+        <span className="text-xs font-medium text-foreground">第 {run.run_no} 次执行</span>
+        <span className="text-[11px] text-muted-foreground">
+          {statusLabel(run.status)} · {run.message_count} 条消息
+        </span>
+        {run.previous_run_id && (
+          <span className="rounded-full bg-primary/10 px-1.5 text-[10px] text-primary">续跑</span>
+        )}
+        <span className="ml-auto text-[10px] text-muted-foreground">
+          {dateTimeFormatter.format(new Date(run.finished_at))}
+        </span>
+        <ChevronDown
+          className={cn(
+            'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+            expanded && 'rotate-180'
+          )}
+        />
+      </button>
+      {expanded && <RunDetail sessionId={sessionId} agentInstanceId={agentInstanceId} run={run} />}
+    </div>
+  );
+}
+
+// 子 Agent 实例的内容区（unique-subagent-message-placeholders）：placeholder 模式下
+// 气泡内不再有该实例的正文行，这里经 runs 接口取终态执行明细——只有一条 run 时
+// 省去头部与点击直接展开 transcript；多条（resume 续跑）按时间倒序列出逐条展开。
+// 列表天然不包含当前进行中的 run，实时输出仍由 SSE 段渲染。
 export const SubAgentRunTranscripts = memo(function SubAgentRunTranscripts({
   sessionId,
   agentInstanceId,
@@ -165,69 +213,56 @@ export const SubAgentRunTranscripts = memo(function SubAgentRunTranscripts({
   agentInstanceId: string;
 }) {
   const runsQuery = useSubAgentRuns(sessionId, agentInstanceId, true);
-  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const runs = useMemo(() => [...(runsQuery.data?.runs ?? [])].reverse(), [runsQuery.data]);
+
+  if (runsQuery.isLoading) {
+    return (
+      <div className="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" /> 正在加载执行记录…
+      </div>
+    );
+  }
+
+  if (runsQuery.error) {
+    return (
+      <div className="px-1 py-2 text-xs text-destructive">
+        执行记录加载失败：{runsQuery.error instanceof Error ? runsQuery.error.message : '未知错误'}
+      </div>
+    );
+  }
+
+  if (runs.length === 0) {
+    return (
+      <div className="px-1 py-2 text-xs text-muted-foreground">暂无可查看的终态执行</div>
+    );
+  }
+
+  if (runs.length === 1) {
+    return (
+      <RunTranscript
+        sessionId={sessionId}
+        agentInstanceId={agentInstanceId}
+        run={runs[0]}
+        initialExpanded
+      />
+    );
+  }
 
   return (
     <section className="rounded-xl border border-white/50 bg-white/25 px-2 py-2">
       <header className="px-1 text-[11px] font-medium text-muted-foreground">
         执行记录（按 run 懒加载）
       </header>
-
-      {runsQuery.isLoading ? (
-        <div className="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" /> 正在加载执行列表…
-        </div>
-      ) : runsQuery.error ? (
-        <div className="px-1 py-2 text-xs text-destructive">
-          执行列表加载失败：{runsQuery.error instanceof Error ? runsQuery.error.message : '未知错误'}
-        </div>
-      ) : runs.length === 0 ? (
-        <div className="px-1 py-2 text-xs text-muted-foreground">暂无可查看的终态执行</div>
-      ) : (
-        <div className="mt-1 space-y-1">
-          {runs.map((run) => {
-            const expanded = expandedRunId === run.run_id;
-            return (
-              <div key={run.run_id} className="rounded-lg bg-white/35">
-                <button
-                  type="button"
-                  onClick={() => setExpandedRunId(expanded ? null : run.run_id)}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left"
-                  aria-expanded={expanded}
-                >
-                  <StatusIcon status={run.status} />
-                  <span className="text-xs font-medium text-foreground">第 {run.run_no} 次执行</span>
-                  <span className="text-[11px] text-muted-foreground">
-                    {statusLabel(run.status)} · {run.message_count} 条消息
-                  </span>
-                  {run.previous_run_id && (
-                    <span className="rounded-full bg-primary/10 px-1.5 text-[10px] text-primary">
-                      续跑
-                    </span>
-                  )}
-                  <span className="ml-auto text-[10px] text-muted-foreground">
-                    {dateTimeFormatter.format(new Date(run.finished_at))}
-                  </span>
-                  <ChevronDown
-                    className={cn(
-                      'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
-                      expanded && 'rotate-180'
-                    )}
-                  />
-                </button>
-                {expanded && (
-                  <RunDetail
-                    sessionId={sessionId}
-                    agentInstanceId={agentInstanceId}
-                    run={run}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+      <div className="mt-1 space-y-1">
+        {runs.map((run) => (
+          <RunTranscript
+            key={run.run_id}
+            sessionId={sessionId}
+            agentInstanceId={agentInstanceId}
+            run={run}
+          />
+        ))}
+      </div>
     </section>
   );
 });

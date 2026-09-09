@@ -413,6 +413,20 @@ export interface paths {
                     page_size?: number;
                     /** @description Sort order for `(msg_time, msg_index)`. */
                     order?: "asc" | "desc";
+                    /**
+                     * @description Sub-agent history view (unique-subagent-message-placeholders).
+                     *     `full` returns every persisted row. `placeholder` filters BEFORE
+                     *     pagination: rows with no dynamic sub-agent identity stay visible,
+                     *     dynamic sub-agent rows are reduced to their lifecycle markers
+                     *     (`agent_start` / `agent_end` / `agent_error` — token, reasoning,
+                     *     tool_call, and tool_result payload rows are omitted), and the
+                     *     parent's duplicated `spawn_subagent` tool_result rows are omitted
+                     *     (the parent tool_call row stays). Use the per-run transcript APIs
+                     *     (`GET .../subagents/{agent_instance_id}/runs[/{run_id}]`) to lazy-load
+                     *     the omitted detail. Any other value is rejected with 400
+                     *     `INVALID_SUBAGENT_CONTENT` before pagination data is read.
+                     */
+                    subagent_content?: "full" | "placeholder";
                 };
                 header?: never;
                 path: {
@@ -429,6 +443,18 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["SessionMessagesResponse"];
+                    };
+                };
+                /**
+                 * @description `INVALID_SUBAGENT_CONTENT`: `subagent_content` must be `full` or
+                 *     `placeholder`. Rejected before any pagination data is read.
+                 */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
                     };
                 };
                 401: components["responses"]["Unauthorized"];

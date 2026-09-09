@@ -1,6 +1,6 @@
 import { memo, useState, type ReactNode } from 'react';
 import { Loader2, Wrench, AlertCircle, Check, ChevronDown, Lightbulb } from 'lucide-react';
-import type { AgentStatus } from '@/stores/ui-store';
+import { useUIStore, type AgentStatus } from '@/stores/ui-store';
 import { MarkdownRenderer } from './markdown-renderer';
 import { OrderedMessageContent } from './ordered-message-content';
 import { SubAgentRunTranscripts } from './sub-agent-run-transcripts';
@@ -14,6 +14,12 @@ interface CollapsibleSubAgentProps {
   sessionId?: string | null;
   status: AgentStatus;
   isLive: boolean;
+  // 是否允许懒加载该实例的 run 历史（placeholder 模式下气泡展开时的内容来源）。
+  // 流式段为 false；持久化块为 true。
+  runHistory: boolean;
+  // 持久化块 id（agent-<行 id>）：提供时折叠态提升进 ui-store，虚拟列表滚出
+  // 视口卸载后滚回仍保持展开；流式段不提供（段 id 的生命周期只有一轮流式）。
+  blockId?: string;
 }
 
 // 状态指示：running→spinner「回答中」；tool_call→工具图标「调用工具」；
@@ -66,14 +72,31 @@ export const CollapsibleSubAgent = memo(function CollapsibleSubAgent({
   sessionId,
   status,
   isLive,
+  runHistory,
+  blockId,
 }: CollapsibleSubAgentProps) {
-  const [collapsed, setCollapsed] = useState(true);
+  // 折叠态分两路：持久化块（blockId 存在）提升进 ui-store——虚拟列表滚出视口
+  // 会卸载组件，本地态会让「展开看明细 → 往下翻 → 回看」时气泡自动合上；
+  // 流式段用组件本地态即可（段随 reconcile 整体替换，本地折叠态无存续价值）。
+  const persistedExpanded = useUIStore((s) =>
+    blockId && sessionId ? (s.expandedSubAgentBlocks[sessionId]?.[blockId] ?? false) : false
+  );
+  const setPersistedExpanded = useUIStore((s) => s.setSubAgentBlockExpanded);
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const collapsed = blockId ? !persistedExpanded : !localExpanded;
+  const toggleCollapsed = () => {
+    if (blockId && sessionId) {
+      setPersistedExpanded(sessionId, blockId, !persistedExpanded);
+    } else {
+      setLocalExpanded((current) => !current);
+    }
+  };
 
   return (
     <div className="glass space-y-1 rounded-2xl rounded-bl-md px-3.5 py-2.5 text-sm">
       <button
         type="button"
-        onClick={() => setCollapsed((c) => !c)}
+        onClick={toggleCollapsed}
         className="flex w-full items-center gap-2 text-left"
         aria-expanded={!collapsed}
       >
@@ -104,7 +127,10 @@ export const CollapsibleSubAgent = memo(function CollapsibleSubAgent({
 
           <OrderedMessageContent timeline={timeline} isLive={isLive} />
 
-          {sessionId && agentInstanceId && (
+          {/* 持久化子 Agent 块的内容来源（placeholder 模式）：点击展开才挂载，
+              内部经 runs 接口取该实例的终态执行明细。流式段不挂——段本身就是
+              run 的实时输出，且进行中的 run 尚无终态行可查。 */}
+          {runHistory && sessionId && agentInstanceId && (
             <SubAgentRunTranscripts sessionId={sessionId} agentInstanceId={agentInstanceId} />
           )}
 

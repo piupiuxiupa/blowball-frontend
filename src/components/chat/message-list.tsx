@@ -134,6 +134,8 @@ function groupMessages(messages: Message[]): MessageBlock[] {
 
     if (msg.event_type === 'agent_start') {
       // 该 (agent, run_id) 已有开块（如 token 先于 agent_start 惰性建块）则复用。
+      // placeholder 模式下子 Agent 行的负载被服务端省略，这个块就是该实例的占位
+      // 气泡——正文由展开时挂载的 run 懒加载面板补齐（见 CollapsibleSubAgent）。
       if (!blockFor(msg)) openBlock(msg);
       continue;
     }
@@ -221,6 +223,33 @@ function groupMessages(messages: Message[]): MessageBlock[] {
       const current = blockFor(msg) ?? openBlock(msg);
       current.reasoning = (current.reasoning ?? '') + msg.content;
     }
+  }
+
+  // placeholder 模式收尾：孤立的子 Agent agent_error 块（错误到达时该身份尚无
+  // 开块而独立成块）会在 resume 续跑后把整个实例的历史面板再渲染一份。把它
+  // 归并进同实例既有线程块，保持面板唯一挂载点。
+  const threadByInstance = new Map<string, MessageBlock>();
+  for (const block of blocks) {
+    if (block.role === 'assistant' && block.agentInstanceId && !block.isError) {
+      threadByInstance.set(blockKey(block.agent, block.runId, block.agentInstanceId), block);
+    }
+  }
+  for (const block of blocks) {
+    if (block.role !== 'assistant' || !block.isError || !block.agentInstanceId) continue;
+    const thread = threadByInstance.get(blockKey(block.agent, block.runId, block.agentInstanceId));
+    if (!thread) continue;
+    thread.isError = true;
+    const suffix = block.content ? `\n\n${block.content}` : '';
+    thread.content += suffix;
+    if (suffix) {
+      const last = thread.timeline[thread.timeline.length - 1];
+      if (last?.type === 'text') {
+        last.content += suffix;
+      } else {
+        thread.timeline.push({ type: 'text', content: suffix });
+      }
+    }
+    block.id = thread.id;
   }
 
   return blocks;
@@ -594,6 +623,9 @@ export function MessageList() {
                         isLive={
                           item.segment.status === 'running' || item.segment.status === 'tool_call'
                         }
+                        // 流式段即 run 的实时输出，不缺历史内容；持久化块才允许
+                        // 懒加载 run 历史（placeholder 历史里负载行已被服务端省略）。
+                        runHistory={false}
                       />
                     )}
                   </div>

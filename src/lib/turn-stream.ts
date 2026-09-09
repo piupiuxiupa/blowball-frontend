@@ -90,6 +90,9 @@ export async function reconcileTurnHistory(sessionId: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
   useUIStore.getState().clearStreamingSegments(sessionId);
+  // 本 turn 的子 Agent run 此刻才终态落库：失效该会话的 run 列表缓存，否则
+  // placeholder 模式下气泡展开后 5 分钟 staleTime 内看不到刚结束的那次执行。
+  void queryClient.invalidateQueries({ queryKey: ['subagent-runs', sessionId] });
 }
 
 // 消费一条 turn 事件流（发送响应或 attach 响应），把事件写入流式分段，直到流关闭

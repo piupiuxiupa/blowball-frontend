@@ -74,6 +74,11 @@ interface UIState {
   // 缺省（模型按 agents.<name>.model 配置,思考按所选条目派生）。客户端状态,重载即回默认。
   selectedModel: string | null;
   selectedEffort: ReasoningEffort | null;
+  // 各会话内被用户手动展开的子 Agent 气泡（placeholder 模式的明细查看态）。
+  // 虚拟列表滚出视口会卸载组件，折叠态若不离开组件本地 state，滚回时气泡已
+  // 自动合上。按消息块 id（agent-<rowId>，持久化行 id 稳定）记录；键空间有界
+  // ——仅用户显式展开的实例。
+  expandedSubAgentBlocks: Record<string, Record<string, true>>;
 
   setActiveSession: (id: string | null) => void;
   setActiveFile: (path: string | null) => void;
@@ -84,6 +89,7 @@ interface UIState {
   toggleShowHiddenFiles: () => void;
   setTurnRun: (sessionId: string, runId: string | null) => void;
   setModelSelection: (model: string | null, effort: ReasoningEffort | null) => void;
+  setSubAgentBlockExpanded: (sessionId: string, blockId: string, expanded: boolean) => void;
   startAgentSegment: (sessionId: string, agent: string, route: SegmentRoute) => void;
   appendSegmentContent: (
     sessionId: string,
@@ -177,6 +183,7 @@ export const useUIStore = create<UIState>((set) => ({
   turnRuns: {},
   selectedModel: null,
   selectedEffort: null,
+  expandedSubAgentBlocks: {},
 
   setActiveSession: (id) => set({ activeSessionId: id }),
   // 切换活动文件时一并退出版本预览（预览绑定的是旧文件的历史版本）。
@@ -200,6 +207,26 @@ export const useUIStore = create<UIState>((set) => ({
     }),
 
   setModelSelection: (model, effort) => set({ selectedModel: model, selectedEffort: effort }),
+
+  setSubAgentBlockExpanded: (sessionId, blockId, expanded) =>
+    set((state) => {
+      const prev = state.expandedSubAgentBlocks[sessionId] ?? {};
+      if (expanded) {
+        if (prev[blockId]) return {};
+        return {
+          expandedSubAgentBlocks: {
+            ...state.expandedSubAgentBlocks,
+            [sessionId]: { ...prev, [blockId]: true },
+          },
+        };
+      }
+      if (!prev[blockId]) return {};
+      const next = { ...prev };
+      delete next[blockId];
+      return {
+        expandedSubAgentBlocks: { ...state.expandedSubAgentBlocks, [sessionId]: next },
+      };
+    }),
 
   // agent_start：push 新段或唤醒同实例旧段，并置 running。若同线路已有活动段
   // （如 token 先到），复用它而非再 push，避免重复孤立段。动态子 Agent resume 时，

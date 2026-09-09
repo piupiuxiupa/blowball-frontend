@@ -3,7 +3,7 @@ import { apiGet } from '@/lib/api';
 import type { SessionMessagesResponse } from '@/lib/api';
 import { DRAFT_SESSION_ID } from '@/stores/ui-store';
 
-const DEFAULT_PAGE_SIZE = 100;
+const DEFAULT_PAGE_SIZE = 2000;
 
 export function useMessages(sessionId: string | null) {
   return useQuery({
@@ -21,6 +21,12 @@ export function useMessages(sessionId: string | null) {
             params: {
               page_size: DEFAULT_PAGE_SIZE,
               order: 'asc',
+              // unique-subagent-message-placeholders：动态子 Agent 行收敛为
+              // agent_start/end/error 生命周期标记，父 spawn_subagent 的重复
+              // tool_result 行也被省略；被省略的正文/工具明细统一由
+              // SubAgentRunTranscripts 面板按 run 懒加载（1.2.0 起的历史读模型），
+              // full 模式会把同一份明细再渲染一遍。
+              subagent_content: 'placeholder',
               ...(pageToken ? { page_token: pageToken } : {}),
             },
           }

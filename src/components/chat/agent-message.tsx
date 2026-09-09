@@ -17,6 +17,12 @@ export interface AgentMessageProps {
   status: AgentStatus;
   // 是否为仍在输出的活动流式段（running/tool_call）；持久化块与已结束段为 false。
   isLive?: boolean;
+  // 是否允许懒加载该实例的 run 历史（placeholder 模式下子 Agent 正文不进消息历史，
+  // 气泡展开时的内容来源）。缺省 true；流式段显式传 false——段本身就是 run 的
+  // 实时输出，无需也没有可懒加载的终态历史。
+  runHistory?: boolean;
+  // 持久化块 id（agent-<行 id>）：提供时折叠态提升进 ui-store，抗虚拟列表卸载。
+  blockId?: string;
   // 左侧用户消息导航轨道点击后的定位高亮，仅用户气泡消费。
   navigationHighlighted?: boolean;
 }
@@ -53,6 +59,8 @@ export const AgentMessage = memo(function AgentMessage(props: AgentMessageProps)
       sessionId={props.sessionId}
       status={props.status}
       isLive={!!props.isLive}
+      runHistory={props.runHistory ?? true}
+      blockId={props.blockId}
     />
   );
 });
