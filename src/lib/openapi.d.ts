@@ -508,7 +508,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "text/event-stream": components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEReasoning"] | components["schemas"]["SSEToolCall"] | components["schemas"]["SSEToolResult"] | components["schemas"]["SSEPlanUpdated"] | components["schemas"]["SSEAgentEnd"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEDone"];
+                        "text/event-stream": components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEReasoning"] | components["schemas"]["SSEToolCall"] | components["schemas"]["SSEToolResult"] | components["schemas"]["SSEPlanUpdated"] | components["schemas"]["SSEAgentEnd"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEArtifact"] | components["schemas"]["SSEDone"];
                     };
                 };
                 /**
@@ -678,7 +678,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "text/event-stream": components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEPlanUpdated"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEDone"];
+                        "text/event-stream": components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEPlanUpdated"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEArtifact"] | components["schemas"]["SSEDone"];
                     };
                 };
                 401: components["responses"]["Unauthorized"];
@@ -1463,6 +1463,139 @@ export interface paths {
                 403: components["responses"]["Forbidden"];
                 /** @description OnlyOffice is not configured (`secret` or `version_service_url` empty). */
                 503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspace/versions/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve a workspace path to its artifact version.
+         * @description Turn-artifacts capability. Returns the newest version record for the
+         *     workspace-relative `path`, or the newest record created at or before
+         *     `before` when given (RFC3339) — the fallback for pinning artifact links
+         *     that reference files produced by earlier turns. Version snapshots are
+         *     taken per turn at turn end; paths never produced as artifacts have no
+         *     versions and resolve to 404.
+         */
+        get: {
+            parameters: {
+                query: {
+                    /**
+                     * @description Workspace-relative slash-separated path.
+                     * @example reports/q3.docx
+                     */
+                    path: string;
+                    /** @description As-of bound; the newest version at or before this time wins. */
+                    before?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The resolved version record. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ArtifactInfo"];
+                    };
+                };
+                /** @description Missing path or malformed before. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                403: components["responses"]["Forbidden"];
+                /** @description The path was never versioned. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspace/versions/{versionId}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an artifact version's content.
+         * @description Turn-artifacts capability. Serves the immutable snapshot bytes (stored
+         *     in the office-vers service) with the MIME type recorded at snapshot
+         *     time; the backend proxies the read so office-vers itself is never
+         *     exposed to clients. Auth accepts EITHER the Bearer header OR a
+         *     `?token=` query JWT so browser-native contexts (<img>, iframe) can
+         *     load it. Unknown ids and ids belonging to another user both return
+         *     404 (existence is not leaked). Office-file version previews use the
+         *     existing `.../files/{path}/onlyoffice-version-config?versionId=`
+         *     endpoint instead (office-vers backed).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description JWT query token; alternative to the Authorization header. */
+                    token?: string;
+                };
+                header?: never;
+                path: {
+                    versionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The snapshot bytes. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/octet-stream": string;
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                /** @description Unknown or cross-user version id. */
+                404: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -2278,10 +2411,53 @@ export interface components {
                 run_id?: string;
             };
         };
+        /**
+         * @description One turn deliverable. `version_id` pins the immutable snapshot taken at
+         *     turn end; it is absent when the file was announced but not snapshotted
+         *     (over the size cap or a snapshot failure) — open the current file then.
+         */
+        ArtifactInfo: {
+            /** @description Workspace-relative slash-separated path. */
+            path: string;
+            /** @description UUID v7 of the version snapshot. */
+            version_id?: string;
+            /** Format: int64 */
+            size: number;
+            mime: string;
+            /**
+             * @description create = path had no prior version; update = path was versioned before.
+             * @enum {string}
+             */
+            op: "create" | "update";
+        };
+        /**
+         * @description Turn-end artifact announcement (turn-artifacts capability): emitted once
+         *     per deliverable just before `done`. `content` is the JSON-marshaled
+         *     ArtifactInfo. Unlike done, artifact events ARE persisted as message rows
+         *     (event_type="artifact"), so historical turns re-resolve their
+         *     deliverables' version pins from them. `agent` is empty: artifacts are
+         *     attributed to the turn, not to one agent.
+         */
+        SSEArtifact: {
+            /** @enum {string} */
+            type: "artifact";
+            agent: string;
+            /** @description JSON-marshaled ArtifactInfo. */
+            content: string;
+        };
         SSEDone: {
             /** @enum {string} */
             type: "done";
             meta: {
+                /**
+                 * @description Turn-artifact summary (turn-artifacts capability): one entry per
+                 *     deliverable the turn produced, mirroring the `artifact` events that
+                 *     precede this done event. Live-stream convenience copy — done is NOT
+                 *     persisted, so history reloads must rebuild the list from the
+                 *     persisted `artifact` event rows. Empty array when the turn produced
+                 *     no deliverables. Absent entirely when the capability is unwired.
+                 */
+                artifacts?: components["schemas"]["ArtifactInfo"][];
                 /**
                  * @description Per-turn token-usage breakdown. Authoritative shape (turn-cost-tracking
                  *     spec): `{total, by_agent, meta}`.

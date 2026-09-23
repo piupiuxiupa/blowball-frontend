@@ -48,7 +48,7 @@ export function OfficeVersionViewer({ path, versionId }: OfficeVersionViewerProp
 // view-only OnlyOffice 编辑器挂载。复用 office-viewer.tsx 的 EditorMount 生命周期模式
 // （loadOnlyOfficeApi → new DocEditor → onAppReady/onError + 超时 + 卸载 destroyEditor），
 // 但无 mode/nonce：版本永远 view，配置取 data.view（永不取 .edit）。
-function ViewOnlyEditorMount({ data }: { data: OfficeEditorVersionResponse }) {
+export function ViewOnlyEditorMount({ data }: { data: OfficeEditorVersionResponse }) {
   // useId() can contain ':' which breaks some internal lookups; sanitize.
   const editorId = 'oov-' + useId().replace(/[^a-zA-Z0-9]/g, '');
   const editorRef = useRef<OnlyOfficeEditorInstance | null>(null);

@@ -11,6 +11,8 @@ import {
 } from '@/lib/message-timeline';
 import { parseAdditionalContext } from '@/lib/additional-context';
 import { ChatMessage } from './chat-message';
+import { ArtifactChips } from './artifact-chips';
+import { parseArtifactInfo, type ArtifactInfo } from '@/lib/artifact';
 import { AgentMessage } from './agent-message';
 import {
   MessageNavigationRail,
@@ -31,6 +33,11 @@ interface MessageBlock {
   timeline: MessageTimelineItem[];
   isError?: boolean;
   msgTime?: string;
+  // turn-artifacts：所属 turn 的产物列表（该 turn 所有 assistant 块共享，
+  // 供块内链接点击时钉版）；renderChips 仅标在产物渲染宿主块上
+  // （该 turn 最后一个 assistant 块；无 assistant 块时退化为该 turn 最后一块）。
+  turnArtifacts?: ArtifactInfo[];
+  renderChips?: boolean;
 }
 
 // 虚拟列表的单个条目：已完成消息块，或流式中的某个 agent 段（尾部按段映射为 N 个 item）。
@@ -58,6 +65,8 @@ function blockKey(agent: string, runId: string, agentInstanceId = ''): string {
 function groupMessages(messages: Message[]): MessageBlock[] {
   const blocks: MessageBlock[] = [];
   let turn = 0;
+  // turn → 产物累积（artifact 行在 turn 末才出现，先收集、收尾统一挂载）。
+  const turnArtifacts = new Map<number, ArtifactInfo[]>();
   // 打开中的块按 agent + 线程身份索引：交错到达的多个实例同时各挂一块；
   // 动态实例的 agent_end 不关闭线程（后续 resume 继续并入），存量 run 仍按
   // run_id 关闭。块在打开时即占位，展示顺序 = 首次开块顺序。
@@ -82,6 +91,7 @@ function groupMessages(messages: Message[]): MessageBlock[] {
       turn,
       content: '',
       timeline: [],
+      msgTime: msg.msg_time,
     };
     // 同一动态实例可能在后续用户回合再次 resume；按线程复用既有块，保证“一个
     // 实例一条线程”的契约，而不是在每个回合都裂成新的气泡。
@@ -132,6 +142,20 @@ function groupMessages(messages: Message[]): MessageBlock[] {
       continue;
     }
 
+    // turn-artifacts：产物事件行（turn 末批量、done 前、随事件流持久化）按位置
+    // 归属当前 turn；agent 为空，不可开块。按 path 去重（SSE 重放会重复）。
+    if (msg.event_type === 'artifact') {
+      const info = parseArtifactInfo(msg.content);
+      if (info && turn > 0) {
+        const list = turnArtifacts.get(turn) ?? [];
+        if (!list.some((a) => a.path === info.path)) {
+          list.push(info);
+          turnArtifacts.set(turn, list);
+        }
+      }
+      continue;
+    }
+
     if (msg.event_type === 'agent_start') {
       // 该 (agent, run_id) 已有开块（如 token 先于 agent_start 惰性建块）则复用。
       // placeholder 模式下子 Agent 行的负载被服务端省略，这个块就是该实例的占位
@@ -169,6 +193,7 @@ function groupMessages(messages: Message[]): MessageBlock[] {
           content: `[错误] ${msg.content}`,
           timeline: [{ type: 'text', content: `[错误] ${msg.content}` }],
           isError: true,
+          msgTime: msg.msg_time,
         });
       }
       continue;
@@ -252,6 +277,19 @@ function groupMessages(messages: Message[]): MessageBlock[] {
     block.id = thread.id;
   }
 
+  // turn-artifacts 收尾：产物列表挂到该 turn 每个 assistant 块（链接钉版上下文），
+  // chips 宿主 = 该 turn 最后一个 assistant 块（无则该 turn 最后一块）。
+  for (const [t, artifacts] of turnArtifacts) {
+    const inTurn = blocks.filter((b) => b.turn === t);
+    if (inTurn.length === 0) continue;
+    const host = [...inTurn].reverse().find((b) => b.role === 'assistant') ?? inTurn[inTurn.length - 1];
+    for (const b of inTurn) {
+      if (b.role === 'assistant') b.turnArtifacts = artifacts;
+    }
+    host.turnArtifacts = artifacts;
+    host.renderChips = true;
+  }
+
   return blocks;
 }
 
@@ -268,6 +306,9 @@ function signatureOf(block: MessageBlock): string {
       .map((item) => `${item.type}:${item.content}:${item.type === 'tool' ? item.result ?? '' : ''}`)
       .join('\n'),
     block.isError ? '1' : '0',
+    block.msgTime ?? '',
+    (block.turnArtifacts ?? []).map((a) => `${a.path}:${a.version_id ?? ''}`).join(','),
+    block.renderChips ? '1' : '0',
   ].join(' ');
 }
 
@@ -298,6 +339,7 @@ function groupMessagesWithCache(
 
 // 稳定的空数组：会话无流式段时返回同一引用，避免每次渲染产生新数组触发无限重渲染。
 const EMPTY_SEGMENTS: StreamingSegment[] = [];
+const EMPTY_ARTIFACTS: ArtifactInfo[] = [];
 
 // 是否为「裸 Confucius」助手条目（块或段）。用于收紧相邻裸块上边距（design D4）。
 function isBareConfuciusItem(item: ListItem): boolean {
@@ -324,6 +366,10 @@ export function MessageList() {
   );
   const activeTurnRunId = useUIStore((s) =>
     activeSessionId ? s.turnRuns[activeSessionId] ?? null : null
+  );
+  // 实时产物条暂存（done.meta.artifacts → reconcile 历史接管后清空）。
+  const liveArtifacts = useUIStore((s) =>
+    activeSessionId ? s.turnArtifacts[activeSessionId] ?? EMPTY_ARTIFACTS : EMPTY_ARTIFACTS
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
@@ -632,6 +678,11 @@ export function MessageList() {
                 </div>
               );
             })}
+          </div>
+        )}
+        {liveArtifacts.length > 0 && (
+          <div className="pb-2">
+            <ArtifactChips artifacts={liveArtifacts} />
           </div>
         )}
       </ScrollArea>

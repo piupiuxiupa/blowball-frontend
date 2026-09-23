@@ -13,6 +13,7 @@ export function DirtyGuardDialog() {
   const setPendingSwitch = useFileEditStore((s) => s.setPendingSwitch);
   const activeFilePath = useUIStore((s) => s.activeFilePath);
   const setActiveFile = useUIStore((s) => s.setActiveFile);
+  const setPreviewVersionId = useUIStore((s) => s.setPreviewVersionId);
   const actions = useFileEditActions();
   const [busy, setBusy] = useState(false);
 
@@ -24,11 +25,13 @@ export function DirtyGuardDialog() {
     : false;
   if (!dirty) return null;
 
-  const targetLabel = pendingSwitch === null ? '关闭当前文件' : `切换到「${pendingSwitch}」`;
+  const targetLabel = pendingSwitch.path === null ? '关闭当前文件' : `切换到「${pendingSwitch.path}」`;
 
-  const finish = (next: string | null) => {
+  const finish = (target: { path: string | null; versionId?: string }) => {
     setPendingSwitch(undefined);
-    setActiveFile(next);
+    setActiveFile(target.path);
+    // setActiveFile 会清 previewVersionId，钉版必须在其后（turn-artifacts）。
+    if (target.versionId) setPreviewVersionId(target.versionId);
   };
 
   const onSave = async () => {

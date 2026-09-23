@@ -123,10 +123,25 @@ export function selectFile(path: string): void {
   const edit = useFileEditStore.getState();
   const active = ui.activeFilePath;
   if (active && edit.dirtyByPath[active] && path !== active) {
-    edit.setPendingSwitch(path);
+    edit.setPendingSwitch({ path });
     return;
   }
   ui.setActiveFile(path);
+}
+
+// 受守卫的「打开指定版本」：与 selectFile 同路径（同一套面板 + FileToolbar），
+// 切换成功后钉到该历史版本（turn-artifacts）。dirty 拦截把 versionId 一并带入
+// pendingSwitch，由 DirtyGuardDialog 在完成切换后补钉。
+export function selectFileVersion(path: string, versionId: string): void {
+  const ui = useUIStore.getState();
+  const edit = useFileEditStore.getState();
+  const active = ui.activeFilePath;
+  if (active && edit.dirtyByPath[active] && path !== active) {
+    edit.setPendingSwitch({ path, versionId });
+    return;
+  }
+  ui.setActiveFile(path);
+  ui.setPreviewVersionId(versionId);
 }
 
 // 关闭查看（清空活动文件）时同样走 dirty 拦截：用 null 目标。
@@ -135,7 +150,7 @@ export function closeFile(): void {
   const edit = useFileEditStore.getState();
   const active = ui.activeFilePath;
   if (active && edit.dirtyByPath[active]) {
-    edit.setPendingSwitch(null);
+    edit.setPendingSwitch({ path: null });
     return;
   }
   ui.setActiveFile(null);

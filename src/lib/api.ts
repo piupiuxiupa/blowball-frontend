@@ -339,8 +339,16 @@ export type LLMTokenPutRequest =
 // 发送请求的思考等级参数类型(与契约枚举一致;UI 提供全集,见 model-selector)。
 export type ReasoningEffort = NonNullable<SendMessageRequest['reasoning_effort']>;
 export type CreateSessionResponse = paths['/api/v1/sessions']['post']['responses']['200']['content']['application/json'];
-export type SessionMessagesResponse =
+// turn-artifacts：后端在 Message.event_type 枚举中漏了 'artifact'（持久化的产物事件行），
+// 本地放宽为 string，待后端补齐契约后可还原为生成类型。放宽落在 Response 层级，
+// 行类型（Message）与缓存写回（乐观消息）同口径。
+type RawSessionMessagesResponse =
   paths['/api/v1/sessions/{session_id}/messages']['get']['responses']['200']['content']['application/json'];
+export type SessionMessagesResponse = Omit<RawSessionMessagesResponse, 'messages'> & {
+  messages?: (Omit<NonNullable<RawSessionMessagesResponse['messages']>[number], 'event_type'> & {
+    event_type: string;
+  })[];
+};
 export type SendMessageRequest =
   paths['/api/v1/sessions/{session_id}/messages']['post']['requestBody']['content']['application/json'];
 export type FileListResponse = paths['/api/v1/workspace/files']['get']['responses']['200']['content']['application/json'];
@@ -353,6 +361,8 @@ export type WriteContentRequest =
 export type FileContentWriteResponse =
   paths['/api/v1/workspace/files/{path}/content']['put']['responses']['200']['content']['application/json'];
 export type Message = NonNullable<SessionMessagesResponse['messages']>[number];
+// turn 产物（artifact 事件 content 的 JSON 形状 / done.meta.artifacts 元素）。
+export type ArtifactInfo = components['schemas']['ArtifactInfo'];
 // GET .../subagents/:agent_instance_id/runs：同一动态子 Agent 实例的终态 run 元数据。
 // 刻意不含 transcript，供前端展开实例时懒加载列表，再按 run 取详情。
 export type SubAgentRunListResponse =

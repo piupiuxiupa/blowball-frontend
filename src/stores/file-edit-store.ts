@@ -17,9 +17,10 @@ interface FileEditState {
   saving: boolean;
   // 非阻塞提示：编辑态聚焦时探测到远端外部变更（design Resolved Decisions 2）。
   notice: string | null;
-  // 切走拦截：用户尝试切换到的目标。undefined = 无拦截；null = 待关闭查看；
-  // string = 待切换到的目标路径。由 DirtyGuardDialog 处理（task 4.4）。
-  pendingSwitch: string | null | undefined;
+  // 切走拦截：用户尝试切换到的目标。undefined = 无拦截；path=null = 待关闭查看；
+  // versionId 存在时切换后进入该版本预览（turn-artifacts 钉版经拦截不丢）。
+  // 由 DirtyGuardDialog 处理（task 4.4）。
+  pendingSwitch: { path: string | null; versionId?: string } | undefined;
   // 当前活跃 Monaco editor（编辑态由 MonacoViewer 注册）。保存/丢弃时读其 getValue/setValue。
   editor: Monaco.editor.IStandaloneCodeEditor | null;
 
@@ -30,7 +31,7 @@ interface FileEditState {
   clearUnder: (prefix: string) => void;
   setSaving: (saving: boolean) => void;
   setNotice: (notice: string | null) => void;
-  setPendingSwitch: (path: string | null | undefined) => void;
+  setPendingSwitch: (target: { path: string | null; versionId?: string } | undefined) => void;
   setEditor: (editor: Monaco.editor.IStandaloneCodeEditor | null) => void;
 }
 
@@ -72,6 +73,6 @@ export const useFileEditStore = create<FileEditState>((set) => ({
     }),
   setSaving: (saving) => set({ saving }),
   setNotice: (notice) => set({ notice }),
-  setPendingSwitch: (path) => set({ pendingSwitch: path }),
+  setPendingSwitch: (target) => set({ pendingSwitch: target }),
   setEditor: (editor) => set({ editor }),
 }));

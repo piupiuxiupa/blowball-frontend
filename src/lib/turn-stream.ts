@@ -1,7 +1,7 @@
 import { parseSSEStream } from '@/lib/sse';
 import { queryClient } from '@/lib/query-client';
 import { useUIStore } from '@/stores/ui-store';
-import type { SessionMessagesResponse } from '@/lib/api';
+import type { ArtifactInfo, SessionMessagesResponse } from '@/lib/api';
 
 // turn 事件流的共享消费层（turn-detach-resume 适配）。
 // 后端把发起连接（POST /messages）与恢复连接（GET /turns/:rid/events）统一为同一条
@@ -90,6 +90,8 @@ export async function reconcileTurnHistory(sessionId: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
   useUIStore.getState().clearStreamingSegments(sessionId);
+  // turn-artifacts：历史已含持久化 artifact 行（分组接管产物条），清实时暂存。
+  useUIStore.getState().clearTurnArtifacts(sessionId);
   // 本 turn 的子 Agent run 此刻才终态落库：失效该会话的 run 列表缓存，否则
   // placeholder 模式下气泡展开后 5 分钟 staleTime 内看不到刚结束的那次执行。
   void queryClient.invalidateQueries({ queryKey: ['subagent-runs', sessionId] });
@@ -104,7 +106,7 @@ export async function consumeTurnStream(
   response: Response,
   signal?: AbortSignal,
 ): Promise<void> {
-  const { startAgentSegment, appendSegmentContent, appendSegmentReasoning, pushSegmentToolCall, pushSegmentPlan, setSegmentStatus, setTurnRun } =
+  const { startAgentSegment, appendSegmentContent, appendSegmentReasoning, pushSegmentToolCall, pushSegmentPlan, setSegmentStatus, setTurnRun, setTurnArtifacts } =
     useUIStore.getState();
 
   // 流式 token 本地缓冲 + rAF 节流：token / reasoning 先按到达顺序累积进缓冲，
@@ -281,11 +283,17 @@ export async function consumeTurnStream(
           flush();
           setSegmentStatus(sessionId, payload.agent, routeOf(payload), 'error');
           break;
-        case 'done':
+        case 'done': {
           // 仅同步 flush 剩余缓冲；流式分段的清空交给流结束后的 reconcileTurnHistory，
           // 由它确认这一轮已落库后再清，避免回复在历史重取前消失。
           flush();
+          // turn-artifacts：done.meta.artifacts 是本轮产物摘要（实时流专属，
+          // 不持久化；历史由 artifact 事件行重建）。暂存 ui-store 供流式区
+          // 末尾渲染产物条；done 每 turn 恰好一次，无需去重。
+          const artifacts = (payload.meta as { artifacts?: ArtifactInfo[] } | undefined)?.artifacts;
+          if (artifacts?.length) setTurnArtifacts(sessionId, artifacts);
           break;
+        }
       }
     }
   } finally {

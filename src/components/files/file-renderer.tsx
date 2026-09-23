@@ -1,3 +1,4 @@
+import { ApiRequestError } from '@/lib/api';
 import { useUIStore } from '@/stores/ui-store';
 import { useFileContent } from '@/hooks/use-file-content';
 import {
@@ -76,6 +77,15 @@ export function FileRenderer({ refreshKey }: FileRendererProps) {
   const content = data && 'content' in data ? (data.content as string) : null;
 
   if (hasError || content === null) {
+    // turn-artifacts：产物链接指向已删除文件时给明确 404 文案（spec 错误降级）。
+    const err = hasError ? (data as { error: Error }).error : null;
+    if (err instanceof ApiRequestError && err.code === 'NOT_FOUND') {
+      return (
+        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          文件不存在或已被删除
+        </div>
+      );
+    }
     return <BinaryPlaceholder path={activeFilePath} />;
   }
 

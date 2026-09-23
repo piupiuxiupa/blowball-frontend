@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { ArtifactInfo } from '@/lib/api';
 import type { ReasoningEffort } from '@/lib/api';
 import {
   appendTimelinePlan,
@@ -62,6 +63,9 @@ interface UIState {
   versionDrawerOpen: boolean;
   // 当前在主编辑区只读预览的历史版本 id；null = 正常编辑/查看态。
   previewVersionId: string | null;
+  // 实时流暂存的本 turn 产物（done.meta.artifacts）；历史落库接管后清空
+  // （见 turn-stream / reconcileTurnHistory）。
+  turnArtifacts: Record<string, ArtifactInfo[]>;
   sidebarCollapsed: boolean;
   showHiddenFiles: boolean;
   streamingSegments: Record<string, StreamingSegment[]>;
@@ -93,6 +97,8 @@ interface UIState {
   setFileViewMode: (mode: FileViewMode) => void;
   setVersionDrawerOpen: (open: boolean) => void;
   setPreviewVersionId: (id: string | null) => void;
+  setTurnArtifacts: (sessionId: string, artifacts: ArtifactInfo[]) => void;
+  clearTurnArtifacts: (sessionId: string) => void;
   toggleSidebar: () => void;
   toggleShowHiddenFiles: () => void;
   toggleContentExpandAll: () => void;  setTurnRun: (sessionId: string, runId: string | null) => void;
@@ -183,6 +189,7 @@ export const useUIStore = create<UIState>((set) => ({
   fileViewMode: 'view',
   versionDrawerOpen: false,
   previewVersionId: null,
+  turnArtifacts: {},
   sidebarCollapsed: false,
   // 默认隐藏以「.」开头的条目（.git/.codegraph 等），保持工作空间整洁；按需在
   // 文件树头部用眼睛按钮切换显示。过滤在各层级生效（含已展开子目录）。
@@ -201,6 +208,17 @@ export const useUIStore = create<UIState>((set) => ({
   setFileViewMode: (mode) => set({ fileViewMode: mode }),
   setVersionDrawerOpen: (open) => set({ versionDrawerOpen: open }),
   setPreviewVersionId: (id) => set({ previewVersionId: id }),
+  setTurnArtifacts: (sessionId, artifacts) =>
+    set((state) => ({
+      turnArtifacts: { ...state.turnArtifacts, [sessionId]: artifacts },
+    })),
+  clearTurnArtifacts: (sessionId) =>
+    set((state) => {
+      if (!(sessionId in state.turnArtifacts)) return {};
+      const next = { ...state.turnArtifacts };
+      delete next[sessionId];
+      return { turnArtifacts: next };
+    }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   toggleShowHiddenFiles: () => set((state) => ({ showHiddenFiles: !state.showHiddenFiles })),
   // 点击循环：未干预/已收起 → 全部展开；已展开 → 全部收起。每次切换递增
