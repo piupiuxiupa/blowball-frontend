@@ -8,6 +8,7 @@ import { MessageInput } from '@/components/chat/message-input';
 import { CatalogueButton } from '@/components/chat/catalogue-button';
 import { SelectionQuoteButton } from '@/components/chat/selection-quote-button';
 import { PlanStatusBar } from '@/components/chat/plan-status-bar';
+import { SubAgentFloatWindow } from '@/components/chat/sub-agent-float-window';
 
 export function ChatPanel() {
   const activeSessionId = useUIStore((s) => s.activeSessionId);
@@ -114,6 +115,10 @@ export function ChatPanel() {
       {/* 任务状态栏外置（chat-visual-hierarchy）：计划卡从消息滚动区移出，
           钉在输入框上方固定显示；无计划时组件返回 null，不占布局。 */}
       {activeSessionId && activeSessionId !== DRAFT_SESSION_ID && <PlanStatusBar />}
+
+      {/* 子 Agent 浮窗（subagent-float-window）：固定定位、单实例，渲染在面板层
+          （虚拟列表外），滚动聊天不影响已打开的窗口。 */}
+      {activeSessionId && activeSessionId !== DRAFT_SESSION_ID && <SubAgentFloatWindow />}
 
       <div className="border-t border-white/40 p-3">
         <MessageInput disabled={!activeSessionId} />

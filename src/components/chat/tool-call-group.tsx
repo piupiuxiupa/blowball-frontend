@@ -30,7 +30,7 @@ export const ToolCallGroup = memo(function ToolCallGroup({
   const resultCount = items.length - callCount;
   const hasError = items.some((it) => it.isError);
   // 段一旦收到 tool_call 即置 tool_call 态直至 agent_end（见 ui-store pushSegmentToolCall），
-  // 折叠行上的 spinner 与 CollapsibleSubAgent 头部的「调用工具」指示同源。
+  // 折叠行上的 spinner 与子 Agent 触发行/浮窗头部的「调用工具」指示同源。
   const isCalling = isLive && status === 'tool_call';
 
   return (

@@ -1,9 +1,8 @@
-import { memo, useRef } from 'react';
+import { memo } from 'react';
 import { Lightbulb } from 'lucide-react';
 import type { AgentStatus } from '@/stores/ui-store';
 import { MarkdownRenderer } from './markdown-renderer';
 import { OrderedMessageContent } from './ordered-message-content';
-import { useGlobalDetails } from './use-global-details';
 import type { MessageTimelineItem } from '@/lib/message-timeline';
 
 interface BareConfuciusProps {
@@ -23,15 +22,11 @@ export const BareConfucius = memo(function BareConfucius({
   status,
   isLive,
 }: BareConfuciusProps) {
-  const reasoningRef = useRef<HTMLDetailsElement>(null);
-  useGlobalDetails(reasoningRef);
-
   return (
     <div className="space-y-2">
       {reasoning && (
         // 思考过程弱化为一行注脚：细竖线 + 灰字，默认折叠；展开后限高内滚。
-        // 接入全局「展开全部/收起全部」（useGlobalDetails）。
-        <details ref={reasoningRef} className="border-l-2 border-foreground/10 pl-2.5">
+        <details className="border-l-2 border-foreground/10 pl-2.5">
           <summary className="flex cursor-pointer list-none items-center gap-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
             <Lightbulb className="h-3 w-3" />
             <span>思考过程</span>

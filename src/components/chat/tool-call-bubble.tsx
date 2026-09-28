@@ -1,6 +1,5 @@
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { ChevronDown, Wrench, AlertCircle } from 'lucide-react';
-import { useUIStore } from '@/stores/ui-store';
 import { cn } from '@/lib/utils';
 
 export interface ToolArg {
@@ -202,13 +201,6 @@ export const ToolCallBubble = memo(function ToolCallBubble({
   const isResult = call.isResult && result === undefined;
   const isError = resultInfo?.isError ?? call.isError;
   const [collapsed, setCollapsed] = useState(true);
-  const expandAll = useUIStore((s) => s.contentExpandAll);
-  const collapseVersion = useUIStore((s) => s.contentCollapseVersion);
-  // 全局「展开全部/收起全部」覆盖：collapseVersion 变化（每次点击全局按钮）
-  // 清洗本地开合状态，统一跟随 expandAll；null（未干预）保持默认折叠。
-  useEffect(() => {
-    if (expandAll !== null) setCollapsed(!expandAll);
-  }, [expandAll, collapseVersion]);
   const hasDetails = args.length > 0 || (resultInfo?.args.length ?? 0) > 0;
 
   const headerLabel = (

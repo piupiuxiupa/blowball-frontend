@@ -1,58 +1,4 @@
-# chat-message-render
-
-## Purpose
-
-定义聊天消息的渲染行为，覆盖 Markdown 解析、代码高亮、消息块标识与长会话虚拟滚动，确保在长会话、流式更新、消息列表重拉取等场景下的渲染性能与稳定性。
-
-## Requirements
-
-### Requirement: Markdown 渲染按内容 memo 化
-系统 SHALL 使 Markdown 渲染组件在输入内容（字符串）未变化时跳过重新解析与重新渲染。
-
-#### Scenario: 已完成消息不因无关更新重渲染
-- **WHEN** 一条已完成消息的内容未变化，但其所在列表因其他原因（如新消息追加、流式更新）重新渲染
-- **THEN** 该消息的 Markdown 不被重新解析
-
-#### Scenario: 内容变化时正常更新
-- **WHEN** 消息内容字符串发生变化
-- **THEN** Markdown 重新解析并以新内容渲染
-
-### Requirement: 代码高亮轻量化与按内容缓存
-系统 SHALL 仅按需注册代码高亮所需的语言集合，并按 (语言, 内容) 缓存高亮结果，使重复渲染不重复执行高亮。
-
-#### Scenario: 未注册语言回退为纯文本
-- **WHEN** 代码块声明的语言不在已注册集合中
-- **THEN** 系统以可读、可复制的纯文本 `<pre>` 形式展示，不报错、不中断渲染
-
-#### Scenario: 重复渲染不重复高亮
-- **WHEN** 同一 (语言, 内容) 的代码块在内容未变化时被再次渲染
-- **THEN** 系统复用上一次高亮结果，不重新执行语法高亮
-
-#### Scenario: 打包体积收敛
-- **WHEN** 构建生产包
-- **THEN** 代码高亮相关产物不再包含未使用的全部语言定义（相对当前 Prism 全量包显著下降）
-
-### Requirement: 消息块稳定标识与对象复用
-系统 SHALL 为消息分组块提供稳定标识，并在底层消息未变化时复用相同的块对象引用，使消息列表重拉取后不触发已完成消息的全量重渲染。
-
-#### Scenario: 重拉取不重渲染已完成消息
-- **WHEN** 消息列表因 invalidate/refetch 重新加载，而已完成消息内容未变
-- **THEN** 这些消息的块对象引用保持不变，对应组件跳过重渲染
-
-#### Scenario: 内容真正变化时重渲染
-- **WHEN** 某消息块底层内容发生变化（如错误信息追加）
-- **THEN** 该块产生新引用并重新渲染
-
-### Requirement: 长会话虚拟滚动
-系统 SHALL 对消息列表实施虚拟滚动，仅渲染可视区域及其缓冲区内的消息块，使长会话（数百条消息）下 DOM 节点数与渲染开销保持有界。
-
-#### Scenario: 长会话滚动流畅
-- **WHEN** 会话包含大量消息块且用户滚动浏览
-- **THEN** 仅可视区域附近的消息块被渲染，滚动不掉帧
-
-#### Scenario: 流式尾行可见与自动滚动仍生效
-- **WHEN** 流式回答持续输出且用户位于底部附近
-- **THEN** 流式尾部内容被渲染并随输出自动滚动到底，行为与非虚拟化时一致
+## MODIFIED Requirements
 
 ### Requirement: 按 agent 差异化渲染助手消息
 
@@ -121,17 +67,6 @@ placeholder 视图（见「消息历史消费 placeholder 子 Agent 视图」）
 
 - **WHEN** 同一动态子 agent 实例在后续用户回合被 resume，历史中再次出现其标记行
 - **THEN** 该实例仍归并为同一线程触发行，浮窗中的 run 明细区只挂载一份，覆盖其全部终态 run
-
-### Requirement: 消息历史消费 placeholder 子 Agent 视图
-系统 SHALL 以 `subagent_content=placeholder` 拉取会话消息历史：动态子 Agent 的明细行（token/reasoning/tool_call/tool_result）与父 Agent 重复的 spawn tool_result 行由服务端在分页前省略；前端把 per-run transcript 懒加载 API（`GET .../subagents/{agent_instance_id}/runs[/{run_id}]`）作为子 Agent 历史明细的唯一规范来源，不依赖消息行内联。`['messages', sessionId]` 查询键空间保持不变，键下缓存的均为 placeholder 视图，发送乐观消息、回滚、reconcile 计数与 attach 回落的既有语义不变。
-
-#### Scenario: 历史拉取携带 placeholder 参数
-- **WHEN** 系统分页拉取一个会话的消息历史
-- **THEN** 每个分页请求都携带 `subagent_content=placeholder`，响应中子 Agent 行只含生命周期标记
-
-#### Scenario: 子 Agent 明细不重复渲染
-- **WHEN** 渲染一段包含动态子 Agent 调用的持久化历史
-- **THEN** 子 Agent 的 token/工具明细只出现在气泡展开后的 run 明细区，不再以气泡正文形式从消息行内联渲染
 
 ### Requirement: 点击子 Agent 气泡懒加载内容
 

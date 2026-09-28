@@ -73,7 +73,7 @@ const StreamSegment = memo(function StreamSegment({ text }: { text: string }) {
   return <MarkdownRenderer>{text}</MarkdownRenderer>;
 });
 
-// 裸 Markdown 正文：BareConfucius（活动段）与 CollapsibleSubAgent（仅展开时）共用。
+// 裸 Markdown 正文：BareConfucius（活动段）与子 Agent 浮窗（打开时）共用。
 // 已完成段直接整段 Markdown（全量解析、按内容 memo）；活动段走增量渲染。
 // 正文不做夹高/折叠——核心内容直接完整显示（chat-visual-hierarchy）。
 export const StreamingContent = memo(function StreamingContent({ text, isLive }: StreamingContentProps) {

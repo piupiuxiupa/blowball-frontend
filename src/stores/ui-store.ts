@@ -49,6 +49,20 @@ export interface SegmentRoute {
   agentInstanceId?: string;
 }
 
+// 子 Agent 浮窗打开态（subagent-float-window design D2）：按身份解析内容——
+// target 为流式段 id 或持久化块 id；agent / runId / agentInstanceId 用于
+// reconcile 清段后向同身份持久化块回退。turnArtifacts / msgTime 为持久化块的
+// 产物链接钉版上下文快照（块内不可变），流式段不带。
+export interface OpenSubAgentWindowState {
+  sessionId: string;
+  agent: string;
+  runId: string;
+  agentInstanceId: string;
+  target: { kind: 'segment' | 'block'; id: string };
+  turnArtifacts?: ArtifactInfo[];
+  msgTime?: string;
+}
+
 // 文件查看模式：默认「只读」(view)，切到「编辑」(edit) 后 Monaco 可写并暴露保存入口。
 // 与 activeFilePath 对称地放在 ui-store；**跨文件粘住**——切换活动文件不重置模式
 // （切走的拦截由 dirty 态负责，见 file-edit-store / dirty-guard-dialog）。
@@ -78,19 +92,9 @@ interface UIState {
   // 缺省（模型按 agents.<name>.model 配置,思考按所选条目派生）。客户端状态,重载即回默认。
   selectedModel: string | null;
   selectedEffort: ReasoningEffort | null;
-  // 各会话内被用户手动展开的子 Agent 气泡（placeholder 模式的明细查看态）。
-  // 虚拟列表滚出视口会卸载组件，折叠态若不离开组件本地 state，滚回时气泡已
-  // 自动合上。按消息块 id（agent-<rowId>，持久化行 id 稳定）记录；键空间有界
-  // ——仅用户显式展开的实例。
-  expandedSubAgentBlocks: Record<string, Record<string, true>>;
-  // 全局「展开全部/收起全部」覆盖信号（chat-visual-hierarchy）：
-  //   null  = 未干预，各块用自身默认（长文夹高、思考/工具/子agent 折叠）；
-  //   true  = 全部展开；false = 全部收起。
-  // collapseVersion 单调递增，每次点击 +1——组件用它做 key/重置锚点，
-  // 把本地折叠态整体清洗一遍（虚拟列表里已卸载的块也随下次挂载读取新值）。
-  // 已卸载的持久化子 agent 块折叠态（expandedSubAgentBlocks）在切换时直接清空。
-  contentExpandAll: boolean | null;
-  contentCollapseVersion: number;
+  // 子 Agent 浮窗（subagent-float-window）：单实例，null = 关闭。浮窗渲染在
+  // ChatPanel 层（虚拟列表外），滚动聊天不卸载；切换会话时清空。
+  openSubAgentWindow: OpenSubAgentWindowState | null;
 
   setActiveSession: (id: string | null) => void;
   setActiveFile: (path: string | null) => void;
@@ -101,9 +105,10 @@ interface UIState {
   clearTurnArtifacts: (sessionId: string) => void;
   toggleSidebar: () => void;
   toggleShowHiddenFiles: () => void;
-  toggleContentExpandAll: () => void;  setTurnRun: (sessionId: string, runId: string | null) => void;
+  openSubAgent: (win: OpenSubAgentWindowState) => void;
+  closeSubAgentWindow: () => void;
+  setTurnRun: (sessionId: string, runId: string | null) => void;
   setModelSelection: (model: string | null, effort: ReasoningEffort | null) => void;
-  setSubAgentBlockExpanded: (sessionId: string, blockId: string, expanded: boolean) => void;
   startAgentSegment: (sessionId: string, agent: string, route: SegmentRoute) => void;
   appendSegmentContent: (
     sessionId: string,
@@ -198,11 +203,10 @@ export const useUIStore = create<UIState>((set) => ({
   turnRuns: {},
   selectedModel: null,
   selectedEffort: null,
-  expandedSubAgentBlocks: {},
-  contentExpandAll: null,
-  contentCollapseVersion: 0,
+  openSubAgentWindow: null,
 
-  setActiveSession: (id) => set({ activeSessionId: id }),
+  // 切换会话同时关闭子 Agent 浮窗（spec：会话切换关闭浮窗）。
+  setActiveSession: (id) => set({ activeSessionId: id, openSubAgentWindow: null }),
   // 切换活动文件时一并退出版本预览（预览绑定的是旧文件的历史版本）。
   setActiveFile: (path) => set({ activeFilePath: path, previewVersionId: null }),
   setFileViewMode: (mode) => set({ fileViewMode: mode }),
@@ -221,15 +225,9 @@ export const useUIStore = create<UIState>((set) => ({
     }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   toggleShowHiddenFiles: () => set((state) => ({ showHiddenFiles: !state.showHiddenFiles })),
-  // 点击循环：未干预/已收起 → 全部展开；已展开 → 全部收起。每次切换递增
-  // collapseVersion 并清空持久化子 agent 展开记录——所有块的本地折叠态
-  // 以新版本号为锚点整体重置，包括虚拟列表里已卸载、尚未挂载的块。
-  toggleContentExpandAll: () =>
-    set((state) => ({
-      contentExpandAll: state.contentExpandAll === true ? false : true,
-      contentCollapseVersion: state.contentCollapseVersion + 1,
-      expandedSubAgentBlocks: {},
-    })),
+
+  openSubAgent: (win) => set({ openSubAgentWindow: win }),
+  closeSubAgentWindow: () => set({ openSubAgentWindow: null }),
 
   // turn 订阅登记：runId 非空登记（取消目标/禁用判据/attach 防重），null 清除（终局/回落）。
   setTurnRun: (sessionId, runId) =>
@@ -244,26 +242,6 @@ export const useUIStore = create<UIState>((set) => ({
     }),
 
   setModelSelection: (model, effort) => set({ selectedModel: model, selectedEffort: effort }),
-
-  setSubAgentBlockExpanded: (sessionId, blockId, expanded) =>
-    set((state) => {
-      const prev = state.expandedSubAgentBlocks[sessionId] ?? {};
-      if (expanded) {
-        if (prev[blockId]) return {};
-        return {
-          expandedSubAgentBlocks: {
-            ...state.expandedSubAgentBlocks,
-            [sessionId]: { ...prev, [blockId]: true },
-          },
-        };
-      }
-      if (!prev[blockId]) return {};
-      const next = { ...prev };
-      delete next[blockId];
-      return {
-        expandedSubAgentBlocks: { ...state.expandedSubAgentBlocks, [sessionId]: next },
-      };
-    }),
 
   // agent_start：push 新段或唤醒同实例旧段，并置 running。若同线路已有活动段
   // （如 token 先到），复用它而非再 push，避免重复孤立段。动态子 Agent resume 时，

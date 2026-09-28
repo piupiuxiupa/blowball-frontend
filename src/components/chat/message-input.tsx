@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FoldVertical, Send, Sparkles, Square, UnfoldVertical, Wrench } from 'lucide-react';
+import { Send, Sparkles, Square, Wrench } from 'lucide-react';
 import { useSendMessage } from '@/hooks/use-send-message';
 import { useSessions } from '@/hooks/use-sessions';
 import { cancelTurn } from '@/hooks/use-turn-lifecycle';
@@ -15,32 +15,6 @@ import { Textarea } from '@/components/ui/textarea';
 
 interface MessageInputProps {
   disabled?: boolean;
-}
-
-// 全局「展开全部/收起全部」按钮：驱动 ui-store.contentExpandAll 覆盖信号，
-// 统一控制思考 details、工具调用卡、子 agent 块的展开/收起（正文不折叠，
-// 始终完整显示）。右对齐在 技能/工具 按钮同排（输入区上方、状态栏下方）。
-function ExpandAllButton() {
-  const expandAll = useUIStore((s) => s.contentExpandAll);
-  const toggle = useUIStore((s) => s.toggleContentExpandAll);
-  const on = expandAll === true;
-  return (
-    <Button
-      variant="ghost"
-      size="sm"
-      className="ml-auto h-7 px-2 text-xs text-muted-foreground"
-      aria-pressed={on}
-      title={on ? '收起全部（思考/工具/子 Agent）' : '展开全部（思考/工具/子 Agent）'}
-      onClick={toggle}
-    >
-      {on ? (
-        <FoldVertical className="h-3.5 w-3.5" />
-      ) : (
-        <UnfoldVertical className="h-3.5 w-3.5" />
-      )}
-      {on ? '收起全部' : '展开全部'}
-    </Button>
-  );
 }
 
 // 触发命中：tab 由触发符决定（@=文件、/=技能工具），start 是触发符在文本中的下标
@@ -350,7 +324,6 @@ export function MessageInput({ disabled }: MessageInputProps) {
         </Button>
         {/* 全局「展开全部/收起全部」：统一控制长正文 ClampedContent 的夹高，
             与 技能/工具 按钮同排、右对齐（输入区上方、状态栏下方）。 */}
-        <ExpandAllButton />
       </div>
       {/* chips 条（类邮件附件）：textarea 只承载正文（design D1）。 */}
       <ComposerAttachmentChips />

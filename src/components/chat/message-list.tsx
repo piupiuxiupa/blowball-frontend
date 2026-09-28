@@ -20,7 +20,7 @@ import {
 } from './message-navigation-rail';
 import type { Message } from '@/lib/api';
 
-interface MessageBlock {
+export interface MessageBlock {
   id: string;
   agent: string;
   runId: string;
@@ -62,7 +62,7 @@ function blockKey(agent: string, runId: string, agentInstanceId = ''): string {
   return agentInstanceId ? `${agent} i:${agentInstanceId}` : `${agent} r:${runId} `;
 }
 
-function groupMessages(messages: Message[]): MessageBlock[] {
+export function groupMessages(messages: Message[]): MessageBlock[] {
   const blocks: MessageBlock[] = [];
   let turn = 0;
   // turn → 产物累积（artifact 行在 turn 末才出现，先收集、收尾统一挂载）。
@@ -159,7 +159,7 @@ function groupMessages(messages: Message[]): MessageBlock[] {
     if (msg.event_type === 'agent_start') {
       // 该 (agent, run_id) 已有开块（如 token 先于 agent_start 惰性建块）则复用。
       // placeholder 模式下子 Agent 行的负载被服务端省略，这个块就是该实例的占位
-      // 气泡——正文由展开时挂载的 run 懒加载面板补齐（见 CollapsibleSubAgent）。
+      // 气泡——正文由浮窗内挂载的 run 懒加载面板补齐（见 SubAgentFloatWindow）。
       if (!blockFor(msg)) openBlock(msg);
       continue;
     }
@@ -663,16 +663,15 @@ export function MessageList() {
                         content={item.segment.content}
                         reasoning={item.segment.reasoning}
                         timeline={item.segment.timeline}
-                        agentInstanceId={item.segment.agentInstanceId || undefined}
-                        sessionId={activeSessionId}
+	                        agentInstanceId={item.segment.agentInstanceId || undefined}
+	                        segmentId={item.segment.id}
+	                        runId={item.segment.runId || undefined}
+	                        sessionId={activeSessionId}
                         status={item.segment.status}
                         isLive={
                           item.segment.status === 'running' || item.segment.status === 'tool_call'
                         }
-                        // 流式段即 run 的实时输出，不缺历史内容；持久化块才允许
-                        // 懒加载 run 历史（placeholder 历史里负载行已被服务端省略）。
-                        runHistory={false}
-                      />
+	                      />
                     )}
                   </div>
                 </div>

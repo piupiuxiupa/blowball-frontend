@@ -8,10 +8,11 @@ import { ArtifactLinkContext } from './markdown-renderer';
 
 interface ChatMessageProps {
   sessionId?: string | null;
-  block: {
-    id: string;
-    agent: string;
-    role: 'user' | 'assistant';
+    block: {
+      id: string;
+      agent: string;
+      runId?: string;
+      role: 'user' | 'assistant';
     content: string;
     reasoning?: string;
     timeline: MessageTimelineItem[];
@@ -43,6 +44,7 @@ export const ChatMessage = memo(function ChatMessage({
         reasoning={block.reasoning}
         timeline={block.timeline}
         agentInstanceId={block.agentInstanceId || undefined}
+        runId={block.runId || undefined}
         sessionId={sessionId}
         status={status}
         isLive={false}
