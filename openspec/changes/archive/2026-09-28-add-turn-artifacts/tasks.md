@@ -26,4 +26,4 @@
 ## 5. 验证
 
 - [x] 5.1 `npm run lint`（tsc --noEmit）与 `npm run build` 通过
-- [ ] 5.2 对照交接文档验收清单逐项人工验证：链接放行与 https 回归、chip 行为、turn N 产物被覆盖后旧消息打开旧内容/工作区打开新内容、刷新后行为不变、无产物 turn 无产物条、他人 versionId 404
+- [x] 5.2 对照交接文档验收清单逐项人工验证：链接放行与 https 回归、chip 行为、turn N 产物被覆盖后旧消息打开旧内容/工作区打开新内容、刷新后行为不变、无产物 turn 无产物条、他人 versionId 404
