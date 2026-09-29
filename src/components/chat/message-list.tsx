@@ -71,6 +71,11 @@ export function groupMessages(messages: Message[]): MessageBlock[] {
   // 动态实例的 agent_end 不关闭线程（后续 resume 继续并入），存量 run 仍按
   // run_id 关闭。块在打开时即占位，展示顺序 = 首次开块顺序。
   const open = new Map<string, MessageBlock>();
+  const suspendOpenTopLevelBlocks = () => {
+    for (const key of open.keys()) {
+      if (key.endsWith(' ')) open.delete(key);
+    }
+  };
 
   const openBlock = (msg: Message): MessageBlock => {
     // 子 agent 的第一个事件（通常是 agent_start，且刚跟在父 invoke tool_call 后）
@@ -78,9 +83,7 @@ export function groupMessages(messages: Message[]): MessageBlock[] {
     // continuation 块并追加在子 agent 块之后，从而恢复“invoke → 子 agent → result”
     // 的全局顺序，而不是把子 agent 整体挤到父 agent 完整消息之后。
     if (messageRunId(msg) !== '') {
-      for (const key of open.keys()) {
-        if (key.endsWith(' ')) open.delete(key);
-      }
+      suspendOpenTopLevelBlocks();
     }
     const block: MessageBlock = {
       id: `agent-${msg.id}`,
@@ -199,11 +202,48 @@ export function groupMessages(messages: Message[]): MessageBlock[] {
       continue;
     }
 
+    // refactor-message-storage：新存储代 FINAL 行（event_type=message, role=assistant）
+    // 整行即该轮正文——content 直读，reasoning_content 为合并后的 reasoning；
+    // 多轮 turn 按行序追加。用户行已由上方 role 分支处理，role='' 的标记行走下方事件分支。
+    if (msg.event_type === 'message' && msg.role === 'assistant') {
+      const current = blockFor(msg) ?? openBlock(msg);
+      current.content += msg.content;
+      appendBlockText(current, msg.content);
+      if (msg.reasoning_content) {
+        current.reasoning = (current.reasoning ?? '') + msg.reasoning_content;
+      }
+      continue;
+    }
+
     // tool_call = 工具调用（{tool_call_id,name,args}）；tool_result = 工具执行结果
     // （{tool_call_id,output:{result,status}}）。调用作为 timeline 节点插到当前位置，
     // 结果按 tool_call_id 合并回对应调用卡；无匹配键时才退化为独立结果卡。
     if (msg.event_type === 'tool_call' || msg.event_type === 'tool_result') {
       let current = blockFor(msg);
+      const toolRecord = msg.event_type === 'tool_call' ? msg.tool_calls?.[0] : undefined;
+      // 新后端把动态子 Agent 身份标在父 spawn 占位行上：不渲染父工具卡，
+      // 直接用参数里的名称生成子 Agent 触发行，正文仍由浮窗懒加载。
+      if (toolRecord?.name === 'spawn_subagent' && messageInstanceId(msg)) {
+        suspendOpenTopLevelBlocks();
+        let agentName = '';
+        try {
+          agentName = String((JSON.parse(toolRecord.arguments) as { name?: unknown }).name ?? '');
+        } catch {
+          // 参数异常时仍保留可点击的实例 ID。
+        }
+        blocks.push({
+          id: `agent-${msg.id}`,
+          agent: agentName || `子Agent ${messageInstanceId(msg).slice(-6)}`,
+          runId: toolRecord.tool_call_id,
+          agentInstanceId: messageInstanceId(msg),
+          role: 'assistant',
+          turn,
+          content: '',
+          timeline: [],
+          msgTime: msg.msg_time,
+        });
+        continue;
+      }
       if (!current && msg.event_type === 'tool_result') {
         // 子 agent 可能已把父块暂时挂起；结果仍应回填到同身份最近的父块中。
         current = [...blocks]
@@ -218,7 +258,24 @@ export function groupMessages(messages: Message[]): MessageBlock[] {
       }
       if (current) {
         if (msg.event_type === 'tool_call') {
-          current.timeline.push({ type: 'tool', content: msg.content });
+          // 新存储代：占位行 content 为空，工具明细在 tool_calls[0]（join 自 canonical
+          // 工具表，result 已内联）。拼回 ToolCallBubble 兼容的调用 JSON 并直挂结果，
+          // 不再等待独立 tool_result 事件行；无 tool_calls 数组 = 旧事件行，走原路径。
+          const record = msg.tool_calls?.[0];
+          current.timeline.push(
+            record
+              ? {
+                  type: 'tool',
+                  content: JSON.stringify({
+                    tool_call_id: record.tool_call_id,
+                    name: record.name,
+                    arguments: record.arguments,
+                  }),
+                  toolCallId: record.tool_call_id,
+                  result: record.result ?? undefined,
+                }
+              : { type: 'tool', content: msg.content },
+          );
         } else {
           const attached = attachTimelineToolResult(current.timeline, msg.content);
           if (attached.matched) {

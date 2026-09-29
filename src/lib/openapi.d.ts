@@ -396,10 +396,14 @@ export interface paths {
          *     user. Messages are ordered by `(msg_time, msg_index)` ascending by
          *     default; use `order=desc` to retrieve newest first. Pass
          *     `page_token` from the previous response to advance pages.
-         *     While a turn is running, history is incremental: the user row and
-         *     already-closed merged events can appear before `done`. A still-growing
-         *     token/reasoning span is not written until it closes. Clients that
-         *     combine history with live run replay should deduplicate rows by
+         *     Rows come in two storage generations (refactor-message-storage):
+         *     legacy event rows (`token`, `reasoning`, `tool_call`,
+         *     `tool_result`, markers) and new assistant FINAL rows
+         *     (`event_type=message`, `round_no >= 1`) whose tool interactions are
+         *     joined in as the `tool_calls` array. While a turn is running,
+         *     history is incremental: the user row and already-closed rounds
+         *     appear before `done`; the still-streaming round does not. Clients
+         *     that combine history with live run replay should deduplicate rows by
          *     `trace_id` and `msg_index` (equivalently, the deterministic
          *     `client_msg_id` when present); the event stream remains authoritative
          *     for live output.
@@ -1692,10 +1696,13 @@ export interface paths {
         };
         /**
          * List the MCP-sourced tool catalogue.
-         * @description Returns only MCP-sourced tools. The catalogue has two parts: proxy
-         *     tools advertised by configured operator (global) MCP servers, and the
+         * @description Returns only MCP-sourced tools. The catalogue has three parts: proxy
+         *     tools advertised by configured operator (global) MCP servers, the
          *     cached tools of the caller's per-user MCP servers (read from the
-         *     workspace config cache; no live connections are made). Built-in tools
+         *     workspace config cache; no live connections are made), and — when the
+         *     `mcp_market` capability is enabled — the cached tools of the caller's
+         *     market-authorized MCP servers (operator-synced `config.json` caches,
+         *     workspace servers shadowing a market server of the same name). Built-in tools
          *     (`xizhi_*`, `webfetch`, executor, `luban_*`) and synthetic `spawn_subagent`
          *     dispatch tool are excluded. Each entry follows the OpenAI
          *     function-tool shape (`type: function`) and carries a `server` field
@@ -2073,11 +2080,20 @@ export interface components {
             /** @enum {string} */
             agent: "user" | "Confucius" | "Chongzhi" | "Liang";
             msg_index: number;
+            /** @description Placeholder anchor (refactor-message-storage): set only on tool placeholder rows (event_type=tool_call) whose position in the (msg_time, msg_index) stream locates one interaction; it joins to the row's `tool_calls` payload. Null on final, user, and legacy rows. */
+            tool_call_id?: string | null;
             /** @enum {string} */
             role: "user" | "assistant" | "tool" | "";
             /** @enum {string} */
             event_type: "message" | "token" | "tool_call" | "tool_result" | "plan_updated" | "agent_start" | "agent_end" | "agent_error" | "reasoning";
             content: string;
+            /** @description Merged reasoning of an assistant FINAL row. Null on legacy event rows (their reasoning lives in separate `reasoning` event rows). */
+            reasoning_content?: string | null;
+            /**
+             * @description `interrupted` marks a truncated final written when the turn was cancelled or failed mid-round. Null on normal rows.
+             * @enum {string|null}
+             */
+            status?: "interrupted" | "" | null;
             /** Format: uuid */
             trace_id: string;
             /** @description Idempotency key minted at persistence time. Backs the Redis-first write-behind delivery: duplicate insert attempts of the same logical message collapse to one row. Rows carry either a deterministic "{trace_id}:{msg_index}" key (the send-time user row, incremental closed-event batches, mid-turn compaction batches, and terminal suffix batches) or a UUID v7 (legacy write-behind minting). Null on rows written before migration 012. */
@@ -2088,6 +2104,24 @@ export interface components {
             run_id?: string | null;
             /** Format: date-time */
             update_time: string;
+            /** @description The row's tool interaction (refactor-message-storage): present only on tool placeholder rows, joined from the canonical tool_calls table by tool_call_id as a one-element array. Legacy event rows carry no such array — their tool interactions are the event rows themselves. */
+            tool_calls?: components["schemas"]["ToolCallRecord"][];
+        };
+        ToolCallRecord: {
+            /**
+             * Format: uuid
+             * @description Producing turn identity (messages.trace_id).
+             */
+            turn_id: string;
+            /** @description OpenAI tool_call pairing key. */
+            tool_call_id: string;
+            name: string;
+            /** @description Raw JSON arguments. */
+            arguments: string;
+            /** @description Raw result output; null until the result arrives. */
+            result?: string | null;
+            /** @enum {string} */
+            status: "pending" | "completed";
         };
         SessionMessagesResponse: {
             messages: components["schemas"]["Message"][];

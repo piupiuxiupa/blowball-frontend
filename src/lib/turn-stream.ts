@@ -279,8 +279,18 @@ export async function consumeTurnStream(
           setSegmentStatus(sessionId, payload.agent, routeOf(payload), 'idle');
           break;
         case 'agent_error':
-          // 出错时先同步 flush，确保已收到的尾部 token 不丢失、不截断，再置段 error。
+          // 出错时先同步 flush，确保已收到的尾部 token 不丢失、不截断，再把错误文案
+          // 按历史同款格式追加进段（后端不落库 agent_error 行时，这是错误详情的
+          // 唯一展示渠道），最后置段 error。
           flush();
+          if (payload.content) {
+            appendSegmentContent(
+              sessionId,
+              payload.agent,
+              routeOf(payload),
+              `\n\n[错误] ${payload.content}`
+            );
+          }
           setSegmentStatus(sessionId, payload.agent, routeOf(payload), 'error');
           break;
         case 'done': {
