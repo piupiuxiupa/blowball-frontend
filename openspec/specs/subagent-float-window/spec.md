@@ -42,6 +42,25 @@
 - **WHEN** 浮窗打开后用户滚动聊天列表，使对应触发行滚出虚拟列表视口
 - **THEN** 浮窗保持打开，内容不丢失；滚回后触发行仍可用
 
+### Requirement: 嵌套子 Agent 递归查看
+
+run transcript 内的 `spawn_subagent` 调用若携带后端关联的子实例 id（子实例已存在终态 run 行），系统 SHALL 将其渲染为可下钻的嵌套子 Agent 触发行而非普通工具卡；点击后 SHALL 经同一 sub-agent runs 懒加载接口展示该子实例的执行记录，多级嵌套 SHALL 支持逐层下钻与逐层返回。未携带子实例链接的 spawn 调用（参数错误、预算失败、子实例仍在运行、存量数据）SHALL 保持普通工具卡渲染。
+
+#### Scenario: 点击嵌套触发行下钻
+
+- **WHEN** 用户在某子 Agent 执行详情中点击带子实例链接的 spawn_subagent 触发行
+- **THEN** 浮窗内容切换为该嵌套子实例的执行记录（经 runs 接口懒加载），浮窗不关闭
+
+#### Scenario: 多级嵌套逐层返回
+
+- **WHEN** 用户从实例 A 的详情下钻到 B，再从 B 下钻到 C
+- **THEN** 每一层级都有返回入口，可逐层回退到上级执行记录
+
+#### Scenario: 无链接的 spawn 调用不下钻
+
+- **WHEN** transcript 内 spawn_subagent 调用未带子实例 id
+- **THEN** 该调用仍按普通工具卡渲染，不出现嵌套下钻入口
+
 ### Requirement: 浮窗内产物链接钉版
 
 浮窗内子 Agent 正文中的产物链接 SHALL 保持与聊天流内渲染一致的钉版行为：点击后以该块所属 turn 的产物列表与时间钉版到文件区。

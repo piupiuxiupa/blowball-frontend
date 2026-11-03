@@ -310,6 +310,27 @@ export async function apiUpload<T>(
   return handleResponse<T>(response);
 }
 
+// add-image-attachments：会话图片附件上传（multipart，字段名 file）。MIME 由后端
+// 魔数嗅探、大小 ≤8MiB 由后端终判；此处不做客户端重编码。
+export function uploadImageAttachment(sessionId: string, file: File) {
+  return apiUpload<AttachmentUploadResponse>(
+    `/api/v1/sessions/${encodeURIComponent(sessionId)}/attachments`,
+    { file }
+  );
+}
+
+// 附件图片的浏览器原生加载 URL（<img> 无法携带 Authorization 头）：query-token
+// + inline=1，与 workspace 预览同模式。内容不可变，可安全命中浏览器缓存。
+export function getAttachmentContentUrl(sessionId: string, attachmentId: string): string {
+  const token = getToken();
+  const params = new URLSearchParams();
+  if (token) params.set('token', token);
+  params.set('inline', '1');
+  return `${getApiBase()}/api/v1/sessions/${encodeURIComponent(
+    sessionId
+  )}/attachments/${encodeURIComponent(attachmentId)}/content?${params.toString()}`;
+}
+
 // Re-export generated types for convenience
 export type LoginRequest = paths['/api/v1/auth/login']['post']['requestBody']['content']['application/json'];
 export type LoginResponse = paths['/api/v1/auth/login']['post']['responses']['200']['content']['application/json'];
@@ -361,6 +382,10 @@ export type WriteContentRequest =
 export type FileContentWriteResponse =
   paths['/api/v1/workspace/files/{path}/content']['put']['responses']['200']['content']['application/json'];
 export type Message = NonNullable<SessionMessagesResponse['messages']>[number];
+// add-image-attachments：用户消息行内嵌的图片附件引用与上传响应（id 为
+// content 端点键；filename/mime 为展示元数据，不可变）。
+export type AttachmentRef = components['schemas']['AttachmentRef'];
+export type AttachmentUploadResponse = components['schemas']['AttachmentUploadResponse'];
 // turn 产物（artifact 事件 content 的 JSON 形状 / done.meta.artifacts 元素）。
 export type ArtifactInfo = components['schemas']['ArtifactInfo'];
 // GET .../subagents/:agent_instance_id/runs：同一动态子 Agent 实例的终态 run 元数据。

@@ -38,6 +38,8 @@ export interface MessageBlock {
   // （该 turn 最后一个 assistant 块；无 assistant 块时退化为该 turn 最后一块）。
   turnArtifacts?: ArtifactInfo[];
   renderChips?: boolean;
+  // add-image-attachments：用户消息携带的图片附件引用（历史行/乐观消息同构）。
+  imageAttachments?: Message['attachments'];
 }
 
 // 虚拟列表的单个条目：已完成消息块，或流式中的某个 agent 段（尾部按段映射为 N 个 item）。
@@ -141,6 +143,7 @@ export function groupMessages(messages: Message[]): MessageBlock[] {
         content: msg.content,
         timeline: [],
         msgTime: msg.msg_time,
+        imageAttachments: msg.attachments,
       });
       continue;
     }
@@ -366,6 +369,8 @@ function signatureOf(block: MessageBlock): string {
     block.msgTime ?? '',
     (block.turnArtifacts ?? []).map((a) => `${a.path}:${a.version_id ?? ''}`).join(','),
     block.renderChips ? '1' : '0',
+    // 附件引用进签名：图片增删/替换必须穿透 memo 复用（design D6）。
+    (block.imageAttachments ?? []).map((a) => `${a.id}:${a.filename}`).join(','),
   ].join(' ');
 }
 

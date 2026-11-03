@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import type { AgentStatus } from '@/stores/ui-store';
 import type { MessageTimelineItem } from '@/lib/message-timeline';
+import type { AttachmentRef } from '@/lib/api';
 import { UserBubble } from './user-bubble';
 import { BareConfucius } from './bare-confucius';
 import { SubAgentRow } from './sub-agent-row';
@@ -24,6 +25,8 @@ export interface AgentMessageProps {
   runId?: string;
   // 左侧用户消息导航轨道点击后的定位高亮，仅用户气泡消费。
   navigationHighlighted?: boolean;
+  // add-image-attachments：用户消息的图片附件引用（缩略图渲染于用户气泡）。
+  imageAttachments?: AttachmentRef[];
 }
 
 // 按 role / agent 名统一派发：持久化块与流式段归约为同一形状后共用此分发器（design D3）。
@@ -34,7 +37,12 @@ export interface AgentMessageProps {
 export const AgentMessage = memo(function AgentMessage(props: AgentMessageProps) {
   if (props.role === 'user') {
     return (
-      <UserBubble content={props.content} isHighlighted={props.navigationHighlighted} />
+      <UserBubble
+        content={props.content}
+        isHighlighted={props.navigationHighlighted}
+        sessionId={props.sessionId}
+        attachments={props.imageAttachments}
+      />
     );
   }
 

@@ -6,7 +6,14 @@ import { attachToRun } from '@/hooks/use-turn-lifecycle';
 import { useAuthStore } from '@/stores/auth-store';
 import { useUIStore } from '@/stores/ui-store';
 import type { AttachmentItem, QuotedReference } from '@/lib/additional-context';
-import type { SendMessageRequest, SessionMessagesResponse, Message, ReasoningEffort } from '@/lib/api';
+import type { PendingImageAttachment } from '@/hooks/use-image-attachment-upload';
+import type {
+  SendMessageRequest,
+  SessionMessagesResponse,
+  Message,
+  ReasoningEffort,
+  AttachmentRef,
+} from '@/lib/api';
 
 // 发送路径：建立流（POST /messages）+ 乐观用户消息 + 收尾 reconcile。
 // 事件消费与缓冲节流在 lib/turn-stream.ts 的共享消费函数中——发送流与 attach 流
@@ -14,7 +21,12 @@ import type { SendMessageRequest, SessionMessagesResponse, Message, ReasoningEff
 // turn 生命周期语义（turn-detach-resume）：断开连接不再取消 turn；停止按钮走
 // cancelTurn（见 use-turn-lifecycle），本地 abort 仅为 detach。
 
-function buildOptimisticUserMessage(sessionId: string, content: string, messages: Message[]): Message {
+function buildOptimisticUserMessage(
+  sessionId: string,
+  content: string,
+  messages: Message[],
+  imageAttachments?: AttachmentRef[]
+): Message {
   const now = new Date().toISOString();
   const maxIndex = messages.reduce((max, m) => (m.msg_index > max ? m.msg_index : max), 0);
   return {
@@ -28,6 +40,9 @@ function buildOptimisticUserMessage(sessionId: string, content: string, messages
     content,
     trace_id: '',
     update_time: now,
+    // add-image-attachments：上传先于发送完成（D1 顺序），乐观消息直接携带真实
+    // 附件引用——与落库行同构，渲染与 reconcile 均无需换源。
+    ...(imageAttachments && imageAttachments.length > 0 ? { attachments: imageAttachments } : {}),
   };
 }
 
@@ -43,6 +58,7 @@ export function useSendMessage() {
       content,
       model,
       reasoningEffort,
+      attachmentIds,
     }: {
       sessionId: string;
       content: string;
@@ -51,6 +67,11 @@ export function useSendMessage() {
       text: string;
       items: AttachmentItem[];
       references: QuotedReference[];
+      // add-image-attachments：发送时已上传完成的附件 id 与引用（请求体 attachment_ids）。
+      // images 是待发送图片快照——请求级失败时输入区据快照恢复图片现场（同 text/items）。
+      attachmentIds?: string[];
+      imageAttachments?: AttachmentRef[];
+      images?: PendingImageAttachment[];
       // per-request-model:可选的模型目录选择与思考等级;缺省不发参数,由后端按
       // agents.<name>.model 配置与目录条目派生。
       model?: string;
@@ -69,6 +90,9 @@ export function useSendMessage() {
               content,
               ...(model ? { model } : {}),
               ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+              ...(attachmentIds && attachmentIds.length > 0
+                ? { attachment_ids: attachmentIds }
+                : {}),
             } as SendMessageRequest,
             token,
             signal,
@@ -96,12 +120,17 @@ export function useSendMessage() {
         abortControllerRef.current = null;
       }
     },
-    onMutate: async ({ sessionId, content }) => {
+    onMutate: async ({ sessionId, content, imageAttachments }) => {
       const queryKey = ['messages', sessionId];
       await queryClient.cancelQueries({ queryKey });
       const previous = queryClient.getQueryData<SessionMessagesResponse>(queryKey);
       const messages = previous?.messages ?? [];
-      const optimistic = buildOptimisticUserMessage(sessionId, content, messages);
+      const optimistic = buildOptimisticUserMessage(
+        sessionId,
+        content,
+        messages,
+        imageAttachments
+      );
       queryClient.setQueryData<SessionMessagesResponse>(queryKey, {
         messages: [...messages, optimistic],
       });
@@ -120,11 +149,14 @@ export function useSendMessage() {
         void attachToRun(sessionId, err.runId);
         return;
       }
-      // 模型/思考等级选择被拒（per-request-model）：目录外名称、非思考模型上非 none
-      // 等级、或部署未配置目录。必须显式告知用户原因,否则表现为「消息发不出去」。
+      // 模型/思考等级/图片附件被拒（per-request-model / add-image-attachments）：
+      // 目录外名称、非思考模型上非 none 等级、部署未配置目录、或非 vision 模型
+      // 携带 attachment_ids。必须显式告知用户原因,否则表现为「消息发不出去」。
       if (
         err instanceof ApiRequestError &&
-        (err.code === 'INVALID_MODEL' || err.code === 'INVALID_EFFORT')
+        (err.code === 'INVALID_MODEL' ||
+          err.code === 'INVALID_EFFORT' ||
+          err.code === 'MODEL_NOT_VISION')
       ) {
         alert(`消息被拒绝：${err.message}`);
       }

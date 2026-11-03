@@ -11,7 +11,9 @@ info:
 
     1.1.0 — turn-detach-resume (disconnecting from an SSE stream no longer
     cancels the turn; run ids, session-busy 409, cancel/resume-by-run-id
-    endpoints, `generating`/`run_id` on the session list) and
+    endpoints, `generating`/`run_id` on the session list; with
+    `messages.queue.enabled` the busy session instead accepts messages into
+    a per-session FIFO queue continued as the next turn) and
     per-request-model-selection (`model`/`reasoning_effort` request params,
     `GET /api/v1/models`).
 
@@ -109,6 +111,15 @@ components:
             while `generating` is true. This is the reload discovery path: a
             reloaded page has lost the `X-Run-Id` header and event meta it
             saw when the turn started, so it recovers the run id from here.
+        queued_count:
+          type: integer
+          description: |
+            How many of the user's messages wait in the session's queue
+            (session-message-queue). Present only when
+            `messages.queue.enabled` is true AND the depth is > 0; omitted
+            otherwise (additive — old clients ignore it). The pending
+            messages themselves come from
+            `GET /api/v1/sessions/{session_id}/queue`.
     SessionListResponse:
       type: object
       required: [sessions]
@@ -117,6 +128,37 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SessionListEntry'
+    SessionQueueEntry:
+      type: object
+      required: [run_id, content, model, enqueued_at]
+      properties:
+        run_id:
+          type: string
+          description: |
+            The queued message's run id — the enqueueing request's trace id.
+            Doubles as the cancel target while queued (dequeue) and as the
+            SSE attach id once the pump starts its turn.
+        content:
+          type: string
+          description: The message content as sent (before the environment status suffix).
+        model:
+          type: string
+          description: The resolved catalog model name the turn will run on.
+        enqueued_at:
+          type: string
+          format: date-time
+          description: Admission (request arrival) time. Display only — the persisted user row takes the continuation time.
+        attachments:
+          type: array
+          description: Image attachment references carried by the message.
+          items: {$ref: '#/components/schemas/AttachmentRef'}
+    SessionQueueResponse:
+      type: object
+      required: [queue]
+      properties:
+        queue:
+          type: array
+          items: {$ref: '#/components/schemas/SessionQueueEntry'}
     SessionDetail:
       type: object
       description: |
@@ -149,6 +191,12 @@ components:
           description: |
             The active turn's run id — the attach/cancel target. Present only
             while `generating` is true (the reload discovery path).
+        queued_count:
+          type: integer
+          description: |
+            The session's queued-message count (session-message-queue),
+            mirroring the list entry: present only when
+            `messages.queue.enabled` is true AND the depth is > 0.
     CreateSessionResponse:
       type: object
       required: [session_id]
@@ -193,6 +241,18 @@ components:
           enum: [message, token, tool_call, tool_result, plan_updated, agent_start, agent_end, agent_error, reasoning]
         content:
           type: string
+        attachments:
+          type: array
+          description: >
+            Image attachment references (add-image-attachments). Present only
+            on attachment-bearing user rows; omitted otherwise. The client
+            renders images from
+            `GET /api/v1/sessions/{session_id}/attachments/{id}/content`
+            (query-token auth) using the id — it never parses the model-facing
+            placeholder text inside `content`. Base64 bytes are never part of
+            any response.
+          items:
+            $ref: '#/components/schemas/AttachmentRef'
         reasoning_content:
           type: string
           nullable: true
@@ -225,9 +285,12 @@ components:
           nullable: true
           description: >
             Stable dynamic sub-agent instance identity. It survives resume and
-            groups one thread across multiple run_id values. Present only on
-            dynamic sub-agent rows; top-level/user rows and rows written before
-            migration 016 are null.
+            groups one thread across multiple run_id values. On spawn
+            placeholder rows (refactor-message-storage) it links the parent
+            spawn_subagent call to its dispatched instance — the lazy-load key
+            for GET .../subagents/{agent_instance_id}/runs. Legacy dynamic
+            sub-agent rows carry their producing instance; top-level/user rows
+            and rows written before migration 016 are null.
         run_id:
           type: string
           nullable: true
@@ -301,6 +364,58 @@ components:
           type: object
           additionalProperties: true
           description: Decoded tool-call arguments. Empty arguments are `{}`.
+        sub_agent_instance_id:
+          type: string
+          description: >
+            Present only on spawn_subagent tool calls whose dispatched child
+            instance has a durable terminal run row in the same session: the
+            child instance id the frontend uses to recursively lazy-load the
+            next tree level through the sub-agent run APIs. Omitted on ordinary
+            tool calls and on spawns without a terminal child row (bad-args or
+            budget failures, still-running children, legacy identities).
+        sub_agent_name:
+          type: string
+          description: Stable attribution label of the linked child instance.
+    AttachmentRef:
+      type: object
+      required: [id, filename, mime]
+      description: >
+        One image attachment reference embedded in a message row
+        (messages.attachments_json, add-image-attachments). filename/mime are
+        denormalized from the registry at send time; attachment metadata is
+        immutable so the copy never drifts.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The attachment registry id — also the content-endpoint key.
+        filename:
+          type: string
+          description: Original client filename (display only).
+        mime:
+          type: string
+          enum: [image/png, image/jpeg, image/webp, image/gif]
+    AttachmentUploadResponse:
+      type: object
+      required: [attachment_id, filename, mime, size]
+      description: >
+        A registered chat image attachment. The bytes live at
+        `data/{user}/attachments/{session}/{id}.{ext}` and are immutable —
+        re-uploading the same image yields a NEW id.
+      properties:
+        attachment_id:
+          type: string
+          format: uuid
+        filename:
+          type: string
+          description: Sanitized original filename (display only).
+        mime:
+          type: string
+          enum: [image/png, image/jpeg, image/webp, image/gif]
+          description: MIME sniffed from the file header magic bytes (never the client declaration or extension).
+        size:
+          type: integer
+          format: int64
     SubAgentTranscriptItem:
       type: object
       required: [type]
@@ -349,6 +464,11 @@ components:
         previous_run_id:
           type: string
           description: Predecessor run when this execution resumed an instance.
+        parent_instance_id:
+          type: string
+          description: >
+            Parent sub-agent instance that dispatched this run. Omitted for
+            root dispatches (spawned directly by the main agent).
         run_no:
           type: integer
           minimum: 1
@@ -375,6 +495,7 @@ components:
         runs:
           - agent_instance_id: w-9f2d4c
             run_id: call_019glegacy
+            parent_instance_id: w-parent01
             run_no: 1
             name: researcher#w-9f2d4c
             status: completed
@@ -404,6 +525,7 @@ components:
         agent_instance_id: w-9f2d4c
         run_id: call_019glegacy
         previous_run_id: call_019gprevious
+        parent_instance_id: w-parent01
         run_no: 2
         name: researcher#w-9f2d4c
         status: completed
@@ -420,6 +542,11 @@ components:
               - id: call_tool_1
                 name: executor
                 arguments: {command: rg regression}
+              - id: call_spawn_1
+                name: spawn_subagent
+                arguments: {task: dig deeper}
+                sub_agent_instance_id: w-child02
+                sub_agent_name: digger#w-child02
           - type: tool_result
             tool_call_id: call_tool_1
             name: executor
@@ -453,6 +580,27 @@ components:
             `thinking: false` entry returns 400 `INVALID_EFFORT`; a
             non-`none` deployment default landing on such an entry is clamped
             to `none` (WARN) and the turn proceeds.
+        attachment_ids:
+          type: array
+          maxItems: 4
+          items:
+            type: string
+            format: uuid
+          description: |
+            Image attachments uploaded either to this session via
+            `POST /api/v1/sessions/{session_id}/attachments`
+            (add-image-attachments) or staged session-independently via
+            `POST /api/v1/attachments` (add-staged-attachment-upload). Each
+            id must belong to the authenticated user AND be bound to this
+            session or still be staged; a staged id is claimed into this
+            session atomically on send (first claimant wins). Unknown,
+            foreign, already-claimed-elsewhere, or claim-lost ids return 404.
+            The turn's resolved model must carry the catalog `vision`
+            capability; otherwise the request is rejected with 400
+            `MODEL_NOT_VISION` before any persistence. The current turn's
+            model request inlines the images as `image_url` content parts;
+            from the next turn on they replay as deterministic text
+            placeholders. Empty/omitted is the plain-text request.
     TurnStatusResponse:
       type: object
       required: [run_id, status]
@@ -461,11 +609,16 @@ components:
           type: string
         status:
           type: string
-          enum: [cancelling, running, done, error, cancelled, interrupted]
+          enum: [cancelling, running, queued, done, error, cancelled, interrupted]
           description: |
             `cancelling` — accepted; the owning process will finalize the run
-            (persisting partial output). The remaining values are terminal
-            states reported by idempotent cancels of finished runs.
+            (persisting partial output). `queued` — the message is still
+            waiting in the session's queue (session-message-queue; returned
+            when a cancel races the queue pump, retry to catch the run once
+            it starts). The remaining values are terminal states reported by
+            idempotent cancels of finished runs — including cancels of
+            queued-but-never-started runs, which dequeue the message and
+            report `cancelled`.
     # ---- SSE event payloads -------------------------------------------------
     # Every sub-agent-produced event additionally carries the optional
     # meta.parent_tool_call_id (subagent-run-identity capability): the id of
@@ -473,6 +626,24 @@ components:
     # consumers attribute interleaved parallel same-name invocations; events
     # from the top-level agent (Confucius) and user rows never carry it, and
     # older frontends simply ignore the unknown key.
+    SSEQueued:
+      type: object
+      required: [type]
+      description: |
+        Queue admission announcement (session-message-queue): the FIRST event
+        on a queued run's log, written at enqueue time — the POST /messages
+        SSE stream opens with it, then tails (possibly for a long time) until
+        the previous turn finishes and the pump starts this message's turn;
+        the turn's `agent_start` and the rest follow on the same stream. Like
+        `done` it never passes through a hub and is never persisted as a
+        message row; `Last-Event-ID` resume replays it like any other event.
+      properties:
+        type: {type: string, enum: [queued]}
+        meta:
+          type: object
+          properties:
+            run_id: {type: string, description: The queued message's run id (the future turn's id, equal to the enqueueing request's trace id).}
+            queue_position: {type: integer, description: 1-based queue depth at admission time (informational).}
     SSEAgentStart:
       type: object
       required: [type, agent]
@@ -967,7 +1138,7 @@ components:
           description: The deployment default reasoning effort applied to requests that omit `reasoning_effort`.
     ModelEntry:
       type: object
-      required: [name, max_context_tokens, max_completion_tokens, thinking]
+      required: [name, max_context_tokens, max_completion_tokens, thinking, vision]
       properties:
         name:
           type: string
@@ -987,6 +1158,14 @@ components:
         thinking:
           type: boolean
           description: Whether the model supports reasoning (gates non-`none` reasoning_effort values).
+        vision:
+          type: boolean
+          description: >
+            Whether the model accepts image attachments on user messages
+            (add-image-attachments). Requests carrying `attachment_ids` that
+            resolve to a `vision: false` entry are rejected with 400
+            `MODEL_NOT_VISION`. Defaults to false in configuration
+            (`openai.models[].vision`).
     LLMTokenStatus:
       type: object
       required: [configured]
@@ -1164,6 +1343,64 @@ paths:
                   status:
                     type: string
                     example: ok
+  /api/v1/attachments:
+    post:
+      tags: [Session]
+      summary: Upload a chat image attachment without a session (add-staged-attachment-upload).
+      description: |
+        Registers one chat image BEFORE any session exists, so clients can
+        upload the moment an image is picked instead of blocking the first
+        send on a slow network. The MIME sniffing, format allowlist
+        (`image/png`, `image/jpeg`, `image/webp`, `image/gif`), 8 MiB cap,
+        and immutability contract are identical to the session-scoped
+        endpoint. Bytes land at
+        `data/{user}/attachments/_staging/{uuid}.{ext}` and the registry row
+        is born STAGED (`session_id` NULL): it is not served by the content
+        endpoint and not attached to any message until
+        `POST .../sessions/{session_id}/messages` references the id, which
+        claims the attachment into that session atomically (first claimant
+        wins; every later session gets 404).
+
+        Staged attachments are a bounded resource: at most 20 unbound uploads
+        per user (429 past that), and any staged image still unclaimed after
+        24 hours is reaped by the orphan sweeper.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The image bytes (≤ 8 MiB; magic-byte sniffed).
+      responses:
+        '200':
+          description: Attachment registered (staged, unbound).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AttachmentUploadResponse'}
+        '400':
+          description: "`UNSUPPORTED_IMAGE_TYPE`: the sniffed type is not one of the four accepted image formats."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: "`FILE_TOO_LARGE`: the file exceeds 8 MiB."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '429':
+          description: "`TOO_MANY_STAGED_ATTACHMENTS`: the per-user staged quota (20 unbound uploads) is exhausted."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '500':
+          $ref: '#/components/responses/Internal'
   /api/v1/auth/login:
     post:
       tags: [Auth]
@@ -1287,14 +1524,15 @@ paths:
       tags: [Session]
       summary: Delete a session owned by the authenticated user.
       description: |
-        Archives the session and all of its titles/messages verbatim into the
-        `*_deleted` mirror tables, purges the live rows (archive + purge is a
-        single atomic transaction), and removes the warm-tier session file.
-        Redis cache entries (`session:{id}`, `msgs:{id}`) are intentionally not
-        cleared; every read path re-validates ownership against MySQL first, so
-        stale cache keys are unreachable until they expire on TTL. Deleting a
-        session that does not exist or belongs to another user returns 404; the
-        existence of another user's session is never disclosed.
+        Drains the write-behind queue, archives the session and all of its
+        titles/messages/attachments verbatim into the `*_deleted` mirror
+        tables, purges the live rows (archive + purge is a single atomic
+        transaction), clears the Redis cache keys (`session:{id}`,
+        `msgs:{id}`), then removes the session's image-attachment directory
+        (add-image-attachments; a directory-removal failure is logged and
+        never fails the delete). Deleting a session that does not exist or
+        belongs to another user returns 404; the existence of another user's
+        session is never disclosed.
       parameters:
         - name: session_id
           in: path
@@ -1336,6 +1574,40 @@ paths:
               schema: {$ref: '#/components/schemas/UpdateTitleResponse'}
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Internal'
+  /api/v1/sessions/{session_id}/queue:
+    get:
+      tags: [Session]
+      summary: List the session's queued messages (session-message-queue).
+      description: |
+        Returns the messages waiting in the session's FIFO queue, in enqueue
+        order (session-message-queue, requires `messages.queue.enabled`).
+        This is the authoritative channel for a reloaded frontend to rebuild
+        its pending-message bubbles: a queued message is NOT in the
+        message-history endpoint until its turn starts (the user row is
+        persisted at continuation time), so the queue endpoint plus the
+        session detail's `queued_count` carry the waiting state. Entries
+        carry the admission-time snapshot fields; `run_id` doubles as the
+        cancel target (POST `.../turns/{run_id}/cancel` removes the entry)
+        and the SSE attach id once the turn starts. A queue-read failure
+        degrades to an empty 200 (the queue is presentation-state; the
+        entries themselves are the durable record until their turns run).
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: The session's queued entries in enqueue order.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SessionQueueResponse'}
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -1409,6 +1681,114 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/Internal'
+  /api/v1/sessions/{session_id}/attachments:
+    post:
+      tags: [Session]
+      summary: Upload a chat image attachment to a session (add-image-attachments).
+      description: |
+        Registers one chat image for the session: the session must belong to
+        the authenticated user. The MIME type is sniffed from the file header
+        magic bytes — the client-declared content type and extension are
+        ignored — and only `image/png`, `image/jpeg`, `image/webp`, and
+        `image/gif` are accepted. The size cap is 8 MiB. Bytes land at
+        `data/{user}/attachments/{session}/{uuid}.{ext}` and are immutable
+        (never re-encoded, stripped, or compressed); the original filename is
+        display-only metadata and never participates in the storage path.
+        Upload does NOT attach the image to any message — reference the
+        returned id from `POST .../messages` `attachment_ids` (at most 4 per
+        message, on a `vision`-capable model).
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The image bytes (≤ 8 MiB; magic-byte sniffed).
+      responses:
+        '200':
+          description: Attachment registered.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AttachmentUploadResponse'}
+        '400':
+          description: "`UNSUPPORTED_IMAGE_TYPE`: the sniffed type is not one of the four accepted image formats."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          description: "`FILE_TOO_LARGE`: the file exceeds 8 MiB."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '500':
+          $ref: '#/components/responses/Internal'
+  /api/v1/sessions/{session_id}/attachments/{attachment_id}/content:
+    get:
+      tags: [Session]
+      summary: Read one attachment's image bytes (query-token auth).
+      description: |
+        Serves the immutable original bytes for `<img>` and other
+        browser-native elements that cannot send an Authorization header.
+        Authentication is the URL query parameter `token` (the caller's login
+        JWT — the same opt-in convention as the workspace token download);
+        ownership is re-validated against the registry's
+        (id, user, session) triple, with a miss mapping to 404. Because
+        attachment content never changes, responses carry
+        `ETag: "{attachment_id}"` and
+        `Cache-Control: private, max-age=31536000, immutable`; conditional
+        requests with a matching `If-None-Match` return 304.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: attachment_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: token
+          in: query
+          required: true
+          schema: {type: string}
+          description: The caller's login JWT (query-token auth for browser-native elements).
+        - name: inline
+          in: query
+          required: false
+          schema: {type: string, enum: ['1']}
+          description: Present for `<img>` usage; the response is always inline.
+      responses:
+        '200':
+          description: The immutable image bytes.
+          headers:
+            ETag:
+              description: '`"<attachment_id>"` — content-addressed; the id never changes.'
+              schema: {type: string}
+            Cache-Control:
+              description: '`private, max-age=31536000, immutable`.'
+              schema: {type: string}
+          content:
+            image/*:
+              schema: {type: string, format: binary}
+        '304':
+          description: Not modified (If-None-Match matched the ETag).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v1/sessions/{session_id}/messages:
     get:
       tags: [Session]
@@ -1536,6 +1916,7 @@ paths:
             text/event-stream:
               schema:
                 oneOf:
+                  - $ref: '#/components/schemas/SSEQueued'
                   - $ref: '#/components/schemas/SSEAgentStart'
                   - $ref: '#/components/schemas/SSEToken'
                   - $ref: '#/components/schemas/SSEReasoning'
@@ -1578,8 +1959,12 @@ paths:
         '409':
           description: |
             The session already has a running turn (single active run per
-            session). The error object carries the active `run_id` so the
-            client can attach to the running turn instead of retrying.
+            session) — with `messages.queue.enabled` false (the default). The
+            error object carries the active `run_id` so the client can attach
+            to the running turn instead of retrying. With the queue enabled,
+            the busy case is instead ACCEPTED (200, `queued` event); the 409
+            here is then only `QUEUE_FULL`: the session's queue already holds
+            `messages.queue.max_depth` entries.
           content:
             application/json:
               schema:
@@ -1588,16 +1973,16 @@ paths:
                 properties:
                   error:
                     type: object
-                    required: [code, message, run_id]
+                    required: [code, message]
                     properties:
                       code:
                         type: string
-                        enum: [SESSION_BUSY]
+                        enum: [SESSION_BUSY, QUEUE_FULL]
                       message:
                         type: string
                       run_id:
                         type: string
-                        description: The currently running turn's run id (attach target).
+                        description: Present on SESSION_BUSY only — the currently running turn's run id (attach target).
         '500':
           $ref: '#/components/responses/Internal'
   /api/v1/sessions/{session_id}/turns/{run_id}/cancel:
@@ -1606,14 +1991,20 @@ paths:
       summary: Cancel a running turn by run id (turn-detach-resume).
       description: |
         Cancels the turn identified by `run_id` and releases its resources.
-        Three outcomes: the run is in THIS agent process (cancelled
+        Four outcomes: the run is in THIS agent process (cancelled
         immediately, partial output persists through the interrupted-turn
         path), the run heartbeats on another replica (a Redis cancel flag is
-        raised; the owning process cancels within one heartbeat period), or
-        the run is dead (crashed process — force-cleared to `interrupted`,
-        session unlocked). Cancelling an already-terminal run is idempotent
-        and reports the terminal status. The run must belong to the caller
-        and the path session, otherwise 404.
+        raised; the owning process cancels within one heartbeat period), the
+        run is dead (crashed process — force-cleared to `interrupted`,
+        session unlocked), or the run is QUEUED (session-message-queue: the
+        message is waiting in the session's queue — it is dequeued, the run
+        reports `cancelled`, and its waiting SSE subscribers close). A queued
+        run has no heartbeat by design and must never be misread as dead.
+        Cancelling the running turn leaves the session's other queued
+        messages intact (they continue as usual). Cancelling an
+        already-terminal run is idempotent and reports the terminal status.
+        The run must belong to the caller and the path session, otherwise
+        404.
       parameters:
         - name: session_id
           in: path
@@ -1649,7 +2040,11 @@ paths:
         retention window passed (or never existed) returns 410 — fall back to
         the ordinary message-history read. If a status-running run's process
         died, the stream replays what was logged, then emits a synthesized
-        terminal `done` event carrying `usage.error = "interrupted..."`.
+        terminal `done` event carrying `usage.error = "interrupted..."`. A
+        QUEUED run (session-message-queue) tails its `queued` event and waits
+        — it has no heartbeat by design and is never misread as dead; the
+        turn's events follow on the same stream once the queue continues
+        it.
       parameters:
         - name: session_id
           in: path
@@ -1678,6 +2073,7 @@ paths:
             text/event-stream:
               schema:
                 oneOf:
+                  - $ref: '#/components/schemas/SSEQueued'
                   - $ref: '#/components/schemas/SSEAgentStart'
                   - $ref: '#/components/schemas/SSEToken'
                   - $ref: '#/components/schemas/SSEPlanUpdated'

@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import type { AgentStatus } from '@/stores/ui-store';
 import type { MessageTimelineItem } from '@/lib/message-timeline';
-import type { ArtifactInfo } from '@/lib/api';
+import type { ArtifactInfo, AttachmentRef } from '@/lib/api';
 import { AgentMessage } from './agent-message';
 import { ArtifactChips } from './artifact-chips';
 import { ArtifactLinkContext } from './markdown-renderer';
@@ -22,6 +22,8 @@ interface ChatMessageProps {
     // turn-artifacts：块所属 turn 的产物列表（链接钉版上下文）与 chips 宿主标记。
     turnArtifacts?: ArtifactInfo[];
     renderChips?: boolean;
+    // add-image-attachments：用户块携带的图片附件引用，透传给 UserBubble 渲染。
+    imageAttachments?: AttachmentRef[];
   };
   navigationHighlighted?: boolean;
 }
@@ -49,6 +51,7 @@ export const ChatMessage = memo(function ChatMessage({
         status={status}
         isLive={false}
         blockId={block.id}
+        imageAttachments={block.imageAttachments}
         navigationHighlighted={navigationHighlighted}
       />
       {block.renderChips && block.turnArtifacts?.length ? (

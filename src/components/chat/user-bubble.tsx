@@ -3,7 +3,9 @@ import { User } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MarkdownRenderer } from './markdown-renderer';
 import { MessageAttachmentChips, MessageReferenceChips } from './attachment-chips';
+import { MessageImageThumbnails } from './image-attachment-chips';
 import { parseAdditionalContext } from '@/lib/additional-context';
+import type { AttachmentRef } from '@/lib/api';
 
 // 用户消息：右侧主色气泡 + 头像。从原 ChatMessage 的 user 分支抽出，
 // 供 AgentMessage 派发器按 role 复用（用户消息渲染形态不变）。
@@ -15,10 +17,15 @@ import { parseAdditionalContext } from '@/lib/additional-context';
 export const UserBubble = memo(function UserBubble({
   content,
   isHighlighted,
+  sessionId,
+  attachments,
 }: {
   content: string;
   // 导航轨道点击后的短时定位态；ring 是 box-shadow，不改变气泡布局。
   isHighlighted?: boolean;
+  // add-image-attachments：图片缩略图的 query-token URL 需要会话上下文。
+  sessionId?: string | null;
+  attachments?: AttachmentRef[];
 }) {
   const parsed = useMemo(() => parseAdditionalContext(content), [content]);
   return (
@@ -39,6 +46,7 @@ export const UserBubble = memo(function UserBubble({
       >
         {parsed && <MessageAttachmentChips items={parsed.items} />}
         {parsed && <MessageReferenceChips references={parsed.references} />}
+        <MessageImageThumbnails sessionId={sessionId} attachments={attachments} />
         <div className="prose prose-sm prose-invert max-w-none">
           <MarkdownRenderer>{parsed ? parsed.rest : content}</MarkdownRenderer>
         </div>

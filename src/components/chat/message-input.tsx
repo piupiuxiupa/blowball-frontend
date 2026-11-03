@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Send, Sparkles, Square, Wrench } from 'lucide-react';
+import { ImagePlus, Send, Sparkles, Square, Wrench } from 'lucide-react';
 import { useSendMessage } from '@/hooks/use-send-message';
 import { useSessions } from '@/hooks/use-sessions';
 import { cancelTurn } from '@/hooks/use-turn-lifecycle';
+import {
+  ACCEPTED_IMAGE_MIMES,
+  IMAGE_ACCEPT,
+  MAX_IMAGE_BYTES,
+  MAX_MESSAGE_IMAGES,
+  useImageAttachmentUpload,
+  type PendingImageAttachment,
+} from '@/hooks/use-image-attachment-upload';
 import { ModelSelector } from '@/components/chat/model-selector';
 import { ContextPicker, type PickerEntry, type PickerTab } from '@/components/chat/context-picker';
 import { ComposerAttachmentChips } from '@/components/chat/attachment-chips';
+import { ComposerImageChips } from '@/components/chat/image-attachment-chips';
 import { serializeAdditionalContext } from '@/lib/additional-context';
+import type { AttachmentRef } from '@/lib/api';
 import { PATH_MIME, PATH_TYPE_MIME } from '@/lib/workspace-dnd';
 import { useAttachmentStore } from '@/stores/attachment-store';
 import { DRAFT_SESSION_ID, useUIStore } from '@/stores/ui-store';
@@ -48,6 +58,13 @@ export function MessageInput({ disabled }: MessageInputProps) {
   // 草稿首条消息的建会话阶段（create-first 编排）：期间输入与按钮禁用，
   // 防双击连建两个会话。
   const [creatingDraft, setCreatingDraft] = useState(false);
+  // 待发送图片（add-image-attachments，design D7）：本地 File + blob 预览，选题零请求；
+  // 上传发生在发送时。切换会话不清空（与上下文附加同语义），卸载时统一 revoke。
+  const [pendingImages, setPendingImages] = useState<PendingImageAttachment[]>([]);
+  // 发送前的上传阶段：期间整体 busy，防止上传中重复提交。
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadImages = useImageAttachmentUpload();
   const activeSessionId = useUIStore((s) => s.activeSessionId);
   // 本会话有活跃 turn（发送流进行中或 attach 中）即视为忙碌——attach 不是
   // mutation、不占 isPending，但运行中会话再发必 409，输入一律禁用。
@@ -64,7 +81,78 @@ export function MessageInput({ disabled }: MessageInputProps) {
   // pending 归属到会话,跨会话互不干扰(流式分段本就按会话隔离)。
   const sendingHere = isPending && variables?.sessionId === activeSessionId;
 
-  const busy = turnActive || sendingHere || creatingDraft;
+  const busy = turnActive || sendingHere || creatingDraft || uploading;
+
+  // ---- 图片附件（add-image-attachments）----
+  // 当前待发送图片的渲染期快照：校验与副作用（alert / createObjectURL /
+  // revokeObjectURL）必须发生在渲染管线之外——StrictMode 会双调 updater，
+  // updater 本体只允许纯合并。
+  const pendingImagesRef = useRef(pendingImages);
+  pendingImagesRef.current = pendingImages;
+
+  // 选题零网络请求（spec）：仅预检数量与单张大小，MIME 真值留给后端魔数嗅探。
+  // 去重键与上传缓存一致（name+size+lastModified），同一文件重复附加无感跳过。
+  const addImages = (files: FileList | File[]) => {
+    // 必须先物化：FileList 是 input 的活视图，下方清空 input.value 会把它同步
+    // 清空；而 setPendingImages 的 updater 要到下次渲染才执行——若在其中读取
+    // FileList 只会得到空列表，按钮选择被静默丢弃（粘贴路径传入的是普通数组，
+    // 不受 input 清空影响——正是「按钮不行、粘贴可以」的根因）。
+    const incoming = Array.from(files);
+    const current = pendingImagesRef.current;
+    const seen = new Set(current.map((image) => image.uid));
+    const additions: PendingImageAttachment[] = [];
+    for (const file of incoming) {
+      const uid = `${file.name}:${file.size}:${file.lastModified}`;
+      if (seen.has(uid)) continue;
+      if (current.length + additions.length >= MAX_MESSAGE_IMAGES) {
+        alert(`每条消息最多 ${MAX_MESSAGE_IMAGES} 张图片`);
+        break;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        alert(`图片「${file.name}」超过 8MiB 上限`);
+        continue;
+      }
+      seen.add(uid);
+      additions.push({ uid, file, previewUrl: URL.createObjectURL(file) });
+    }
+    if (additions.length > 0) {
+      // 纯合并：仅按 uid 去重拼接，无副作用。
+      setPendingImages((prev) => {
+        const prevUids = new Set(prev.map((image) => image.uid));
+        return [...prev, ...additions.filter((image) => !prevUids.has(image.uid))];
+      });
+    }
+    // 允许再次选择同一文件：change 只在值变化时触发。
+    // incoming 已物化，随后的清空不再影响本次选择。
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removeImage = (uid: string) => {
+    const target = pendingImagesRef.current.find((image) => image.uid === uid);
+    if (target) URL.revokeObjectURL(target.previewUrl);
+    setPendingImages((prev) => prev.filter((image) => image.uid !== uid));
+  };
+
+  // 卸载时 revoke 当前预览（提交路径已各自 revoke，不在 state 中）。
+  useEffect(
+    () => () => {
+      pendingImagesRef.current.forEach((image) => URL.revokeObjectURL(image.previewUrl));
+    },
+    []
+  );
+
+  // 粘贴图片（design D8）：只拦截剪贴板里的图片文件，交给与选图入口同一
+  // addImages 管线（类型/数量/大小/去重）；纯文本等不含图片的粘贴不
+  // preventDefault，浏览器默认行为零变化。
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData.items)
+      .filter((item) => item.kind === 'file' && ACCEPTED_IMAGE_MIMES.has(item.type))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (files.length === 0) return;
+    e.preventDefault();
+    addImages(files);
+  };
 
   // ---- 附加上下文（message-context-mentions）----
   // 两个弹层来源：trigger = 键入 @ 或 / 触发（携带查询串）；buttonTab = 常驻按钮打开
@@ -157,6 +245,17 @@ export function MessageInput({ disabled }: MessageInputProps) {
     if (isError && variables) {
       setContent(variables.text);
       useAttachmentStore.getState().restore(variables.items, variables.references);
+      // 图片现场恢复（spec「非 vision 模型发送被拒」）：提交时已 revoke 快照的
+      // blob URL，这里从 File 重新生成本地预览，上传 id 缓存仍在、可直接重发。
+      if (variables.images && variables.images.length > 0) {
+        setPendingImages(
+          variables.images.map(({ uid, file }) => ({
+            uid,
+            file,
+            previewUrl: URL.createObjectURL(file),
+          }))
+        );
+      }
     }
   }, [isError, variables]);
 
@@ -179,7 +278,35 @@ export function MessageInput({ disabled }: MessageInputProps) {
     const references = useAttachmentStore.getState().references;
     const block = serializeAdditionalContext(items, references);
     const fullContent = block ? `${block}\n\n${text}` : text;
-    const send = (sessionId: string) =>
+    const images = pendingImages;
+
+    // add-image-attachments（design D1）：上传发生在（可能的）建会话之后、消息请求
+    // 之前；任一失败中止且不发出消息请求，文本与全部图片保留——成功项已进缓存，
+    // 重试仅重传失败项。上传先于 sendMessage 完成，因此 variables 携带真实
+    // attachment_ids/引用，乐观消息与落库行同构。
+    const send = async (sessionId: string) => {
+      let attachmentIds: string[] | undefined;
+      let imageAttachments: AttachmentRef[] | undefined;
+      if (images.length > 0) {
+        setUploading(true);
+        try {
+          const uploaded = await uploadImages(
+            sessionId,
+            images.map((image) => image.file)
+          );
+          attachmentIds = uploaded.map((item) => item.attachment_id);
+          imageAttachments = uploaded.map((item) => ({
+            id: item.attachment_id,
+            filename: item.filename,
+            mime: item.mime,
+          }));
+        } catch (err) {
+          alert(err instanceof Error ? err.message : `图片上传失败：${String(err)}`);
+          return;
+        } finally {
+          setUploading(false);
+        }
+      }
       sendMessage({
         sessionId,
         content: fullContent,
@@ -188,15 +315,19 @@ export function MessageInput({ disabled }: MessageInputProps) {
         references,
         model: selectedModel ?? undefined,
         reasoningEffort: selectedEffort ?? undefined,
+        ...(attachmentIds && imageAttachments ? { attachmentIds, imageAttachments, images } : {}),
       });
+      setContent('');
+      useAttachmentStore.getState().clear();
+      images.forEach((image) => URL.revokeObjectURL(image.previewUrl));
+      setPendingImages([]);
+    };
 
     if (activeSessionId === DRAFT_SESSION_ID) {
       setCreatingDraft(true);
       try {
         const { session_id } = await createSessionAsync();
-        send(session_id);
-        setContent('');
-        useAttachmentStore.getState().clear();
+        await send(session_id);
       } catch (err) {
         alert(`创建会话失败：${err instanceof Error ? err.message : String(err)}`);
         // 留在草稿态,输入文本保留,可直接重试。
@@ -206,9 +337,7 @@ export function MessageInput({ disabled }: MessageInputProps) {
       return;
     }
 
-    send(activeSessionId);
-    setContent('');
-    useAttachmentStore.getState().clear();
+    await send(activeSessionId);
   };
 
   // 停止 = 显式取消 turn（turn-detach-resume：断开连接不再取消）。取消后本端
@@ -299,6 +428,29 @@ export function MessageInput({ disabled }: MessageInputProps) {
       {/* 模型/思考等级选择:影响下一条消息,挂在输入区上方;无可选目录时自行隐藏。 */}
       <ModelSelector />
       <div className="flex items-center gap-1">
+        {/* 图片附件（add-image-attachments）：选题零请求，满 4 张禁用（契约硬限制，
+            非 vision 预测——模型门控只在发送失败时兜底，design D4）。 */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={IMAGE_ACCEPT}
+          multiple
+          hidden
+          onChange={(e) => {
+            if (e.target.files) addImages(e.target.files);
+          }}
+        />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-xs text-muted-foreground"
+          disabled={disabled || busy || pendingImages.length >= MAX_MESSAGE_IMAGES}
+          title="附加图片（每条消息最多 4 张，单张 ≤8MiB）"
+          aria-label="附加图片"
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <ImagePlus className="h-3.5 w-3.5" /> 图片
+        </Button>
         {/* 常驻按钮：与 `/` 触发打开同一弹层（不同初始分组），鼠标流入口（spec）。 */}
         <Button
           variant="ghost"
@@ -327,12 +479,14 @@ export function MessageInput({ disabled }: MessageInputProps) {
       </div>
       {/* chips 条（类邮件附件）：textarea 只承载正文（design D1）。 */}
       <ComposerAttachmentChips />
+      <ComposerImageChips images={pendingImages} onRemove={removeImage} />
       <div className="flex items-end gap-2">
         <Textarea
           ref={textareaRef}
           value={content}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           onCompositionStart={handleCompositionStart}
           onCompositionEnd={handleCompositionEnd}
           onBlur={(e) => {

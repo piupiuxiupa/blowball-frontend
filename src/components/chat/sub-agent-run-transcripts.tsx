@@ -1,5 +1,16 @@
 import { memo, useMemo, useState } from 'react';
-import { AlertCircle, CheckCircle2, ChevronDown, Clock3, Lightbulb, Loader2, Sparkles } from 'lucide-react';
+import {
+  AlertCircle,
+  Bot,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  Clock3,
+  Lightbulb,
+  Loader2,
+  PanelTopOpen,
+  Sparkles,
+} from 'lucide-react';
 import { useSubAgentRunDetail, useSubAgentRuns } from '@/hooks/use-subagent-runs';
 import type {
   SubAgentRunDetail,
@@ -41,6 +52,13 @@ function findResult(
   return transcript.slice(startIndex + 1).find((item) => item.tool_call_id === toolCallId);
 }
 
+// 嵌套下钻目标：transcript 内 spawn_subagent 调用携带的子实例链接。后端只在
+// 子实例已有终态 run 行时给出该链接，因此下钻后 runs 接口必有可展示数据。
+interface NestedSpawnTarget {
+  instanceId: string;
+  name: string;
+}
+
 // run transcript 内的思考块：默认折叠的弱化注脚，与消息流内样式一致。
 const TranscriptReasoning = memo(function TranscriptReasoning({ content }: { content: string }) {
   return (
@@ -56,7 +74,40 @@ const TranscriptReasoning = memo(function TranscriptReasoning({ content }: { con
   );
 });
 
-const TranscriptView = memo(function TranscriptView({ detail }: { detail: SubAgentRunDetail }) {
+// 嵌套子 Agent 触发行：替换 spawn 工具卡——任务参数与最终输出都在子实例自己的
+// transcript 里，父级保留可下钻的入口即可，避免整段任务原文在两层重复渲染。
+const NestedSpawnRow = memo(function NestedSpawnRow({
+  name,
+  onOpen,
+}: {
+  name: string;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group flex w-full items-center gap-2 rounded-lg border border-white/50 bg-white/35 px-2 py-1.5 text-left transition-colors hover:bg-white/60"
+      title="打开嵌套子 Agent 执行记录"
+    >
+      <Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="truncate text-xs font-medium text-foreground">{name}</span>
+      <span className="shrink-0 text-[10px] text-muted-foreground">嵌套子 Agent</span>
+      <PanelTopOpen
+        className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground/70 transition-colors group-hover:text-foreground"
+        aria-hidden
+      />
+    </button>
+  );
+});
+
+const TranscriptView = memo(function TranscriptView({
+  detail,
+  onOpenNested,
+}: {
+  detail: SubAgentRunDetail;
+  onOpenNested: (target: NestedSpawnTarget) => void;
+}) {
   return (
     <div className="space-y-2">
       {detail.transcript.map((item, index) => {
@@ -88,6 +139,17 @@ const TranscriptView = memo(function TranscriptView({ detail }: { detail: SubAge
               )}
               {(item.tool_calls ?? []).map((call) => {
                 const result = findResult(detail.transcript, index, call.id);
+                const nestedId = call.sub_agent_instance_id || '';
+                if (nestedId) {
+                  const nestedName = call.sub_agent_name || `子Agent ${nestedId.slice(-6)}`;
+                  return (
+                    <NestedSpawnRow
+                      key={call.id}
+                      name={nestedName}
+                      onOpen={() => onOpenNested({ instanceId: nestedId, name: nestedName })}
+                    />
+                  );
+                }
                 return (
                   <ToolCallBubble
                     key={call.id}
@@ -134,10 +196,12 @@ function RunDetail({
   sessionId,
   agentInstanceId,
   run,
+  onOpenNested,
 }: {
   sessionId: string;
   agentInstanceId: string;
   run: SubAgentRunSummary;
+  onOpenNested: (target: NestedSpawnTarget) => void;
 }) {
   const detail = useSubAgentRunDetail(sessionId, agentInstanceId, run.run_id, true);
 
@@ -160,7 +224,7 @@ function RunDetail({
   if (!detail.data) return null;
   return (
     <div className="px-1 pb-2 pt-1">
-      <TranscriptView detail={detail.data} />
+      <TranscriptView detail={detail.data} onOpenNested={onOpenNested} />
     </div>
   );
 }
@@ -172,11 +236,13 @@ function RunTranscript({
   agentInstanceId,
   run,
   initialExpanded,
+  onOpenNested,
 }: {
   sessionId: string;
   agentInstanceId: string;
   run: SubAgentRunSummary;
   initialExpanded?: boolean;
+  onOpenNested: (target: NestedSpawnTarget) => void;
 }) {
   const [expanded, setExpanded] = useState(!!initialExpanded);
 
@@ -206,7 +272,14 @@ function RunTranscript({
           )}
         />
       </button>
-      {expanded && <RunDetail sessionId={sessionId} agentInstanceId={agentInstanceId} run={run} />}
+      {expanded && (
+        <RunDetail
+          sessionId={sessionId}
+          agentInstanceId={agentInstanceId}
+          run={run}
+          onOpenNested={onOpenNested}
+        />
+      )}
     </div>
   );
 }
@@ -222,8 +295,32 @@ export const SubAgentRunTranscripts = memo(function SubAgentRunTranscripts({
   sessionId: string;
   agentInstanceId: string;
 }) {
+  // 嵌套下钻：本层级只保存「当前打开的一个子实例」；更深层级由递归渲染的
+  // SubAgentRunTranscripts 各自持有自己的下钻态——多级嵌套天然可继续下钻，
+  // 返回按钮逐层回退，浮窗本身不关闭。
+  const [nested, setNested] = useState<NestedSpawnTarget | null>(null);
   const runsQuery = useSubAgentRuns(sessionId, agentInstanceId, true);
   const runs = useMemo(() => [...(runsQuery.data?.runs ?? [])].reverse(), [runsQuery.data]);
+
+  if (nested) {
+    return (
+      <section className="space-y-2">
+        <header className="flex items-center gap-2 rounded-lg border border-white/50 bg-white/35 px-1.5 py-1.5">
+          <button
+            type="button"
+            onClick={() => setNested(null)}
+            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-black/[0.05] hover:text-foreground"
+            aria-label="返回上一级执行记录"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </button>
+          <span className="truncate text-xs font-medium text-foreground">{nested.name}</span>
+          <span className="shrink-0 text-[10px] text-muted-foreground">嵌套子 Agent</span>
+        </header>
+        <SubAgentRunTranscripts sessionId={sessionId} agentInstanceId={nested.instanceId} />
+      </section>
+    );
+  }
 
   if (runsQuery.isLoading) {
     return (
@@ -254,6 +351,7 @@ export const SubAgentRunTranscripts = memo(function SubAgentRunTranscripts({
         agentInstanceId={agentInstanceId}
         run={runs[0]}
         initialExpanded
+        onOpenNested={setNested}
       />
     );
   }
@@ -270,6 +368,7 @@ export const SubAgentRunTranscripts = memo(function SubAgentRunTranscripts({
             sessionId={sessionId}
             agentInstanceId={agentInstanceId}
             run={run}
+            onOpenNested={setNested}
           />
         ))}
       </div>

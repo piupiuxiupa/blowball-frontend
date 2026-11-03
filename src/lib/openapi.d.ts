@@ -209,14 +209,15 @@ export interface paths {
         post?: never;
         /**
          * Delete a session owned by the authenticated user.
-         * @description Archives the session and all of its titles/messages verbatim into the
-         *     `*_deleted` mirror tables, purges the live rows (archive + purge is a
-         *     single atomic transaction), and removes the warm-tier session file.
-         *     Redis cache entries (`session:{id}`, `msgs:{id}`) are intentionally not
-         *     cleared; every read path re-validates ownership against MySQL first, so
-         *     stale cache keys are unreachable until they expire on TTL. Deleting a
-         *     session that does not exist or belongs to another user returns 404; the
-         *     existence of another user's session is never disclosed.
+         * @description Drains the write-behind queue, archives the session and all of its
+         *     titles/messages/attachments verbatim into the `*_deleted` mirror
+         *     tables, purges the live rows (archive + purge is a single atomic
+         *     transaction), clears the Redis cache keys (`session:{id}`,
+         *     `msgs:{id}`), then removes the session's image-attachment directory
+         *     (add-image-attachments; a directory-removal failure is logged and
+         *     never fails the delete). Deleting a session that does not exist or
+         *     belongs to another user returns 404; the existence of another user's
+         *     session is never disclosed.
          */
         delete: {
             parameters: {
@@ -373,6 +374,157 @@ export interface paths {
                 401: components["responses"]["Unauthorized"];
                 404: components["responses"]["NotFound"];
                 500: components["responses"]["Internal"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{session_id}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload a chat image attachment to a session (add-image-attachments).
+         * @description Registers one chat image for the session: the session must belong to
+         *     the authenticated user. The MIME type is sniffed from the file header
+         *     magic bytes — the client-declared content type and extension are
+         *     ignored — and only `image/png`, `image/jpeg`, `image/webp`, and
+         *     `image/gif` are accepted. The size cap is 8 MiB. Bytes land at
+         *     `data/{user}/attachments/{session}/{uuid}.{ext}` and are immutable
+         *     (never re-encoded, stripped, or compressed); the original filename is
+         *     display-only metadata and never participates in the storage path.
+         *     Upload does NOT attach the image to any message — reference the
+         *     returned id from `POST .../messages` `attachment_ids` (at most 4 per
+         *     message, on a `vision`-capable model).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    session_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "multipart/form-data": {
+                        /**
+                         * Format: binary
+                         * @description The image bytes (≤ 8 MiB; magic-byte sniffed).
+                         */
+                        file: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Attachment registered. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AttachmentUploadResponse"];
+                    };
+                };
+                /** @description `UNSUPPORTED_IMAGE_TYPE`: the sniffed type is not one of the four accepted image formats. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                404: components["responses"]["NotFound"];
+                /** @description `FILE_TOO_LARGE`: the file exceeds 8 MiB. */
+                413: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                500: components["responses"]["Internal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{session_id}/attachments/{attachment_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one attachment's image bytes (query-token auth).
+         * @description Serves the immutable original bytes for `<img>` and other
+         *     browser-native elements that cannot send an Authorization header.
+         *     Authentication is the URL query parameter `token` (the caller's login
+         *     JWT — the same opt-in convention as the workspace token download);
+         *     ownership is re-validated against the registry's
+         *     (id, user, session) triple, with a miss mapping to 404. Because
+         *     attachment content never changes, responses carry
+         *     `ETag: "{attachment_id}"` and
+         *     `Cache-Control: private, max-age=31536000, immutable`; conditional
+         *     requests with a matching `If-None-Match` return 304.
+         */
+        get: {
+            parameters: {
+                query: {
+                    /** @description The caller's login JWT (query-token auth for browser-native elements). */
+                    token: string;
+                    /** @description Present for `<img>` usage; the response is always inline. */
+                    inline?: "1";
+                };
+                header?: never;
+                path: {
+                    session_id: string;
+                    attachment_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The immutable image bytes. */
+                200: {
+                    headers: {
+                        /** @description `"<attachment_id>"` — content-addressed; the id never changes. */
+                        ETag?: string;
+                        /** @description `private, max-age=31536000, immutable`. */
+                        "Cache-Control"?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/*": string;
+                    };
+                };
+                /** @description Not modified (If-None-Match matched the ETag). */
+                304: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["Unauthorized"];
+                404: components["responses"]["NotFound"];
             };
         };
         put?: never;
@@ -2087,6 +2239,8 @@ export interface components {
             /** @enum {string} */
             event_type: "message" | "token" | "tool_call" | "tool_result" | "plan_updated" | "agent_start" | "agent_end" | "agent_error" | "reasoning";
             content: string;
+            /** @description Image attachment references (add-image-attachments). Present only on attachment-bearing user rows; omitted otherwise. The client renders images from `GET /api/v1/sessions/{session_id}/attachments/{id}/content` (query-token auth) using the id — it never parses the model-facing placeholder text inside `content`. Base64 bytes are never part of any response. */
+            attachments?: components["schemas"]["AttachmentRef"][];
             /** @description Merged reasoning of an assistant FINAL row. Null on legacy event rows (their reasoning lives in separate `reasoning` event rows). */
             reasoning_content?: string | null;
             /**
@@ -2098,7 +2252,7 @@ export interface components {
             trace_id: string;
             /** @description Idempotency key minted at persistence time. Backs the Redis-first write-behind delivery: duplicate insert attempts of the same logical message collapse to one row. Rows carry either a deterministic "{trace_id}:{msg_index}" key (the send-time user row, incremental closed-event batches, mid-turn compaction batches, and terminal suffix batches) or a UUID v7 (legacy write-behind minting). Null on rows written before migration 012. */
             client_msg_id?: string | null;
-            /** @description Stable dynamic sub-agent instance identity. It survives resume and groups one thread across multiple run_id values. Present only on dynamic sub-agent rows; top-level/user rows and rows written before migration 016 are null. */
+            /** @description Stable dynamic sub-agent instance identity. It survives resume and groups one thread across multiple run_id values. On spawn placeholder rows (refactor-message-storage) it links the parent spawn_subagent call to its dispatched instance — the lazy-load key for GET .../subagents/{agent_instance_id}/runs. Legacy dynamic sub-agent rows carry their producing instance; top-level/user rows and rows written before migration 016 are null. */
             agent_instance_id?: string | null;
             /** @description Sub-agent invocation run identity (subagent-run-identity capability): the id of the parent spawn_subagent tool_call that spawned the producing Run. Present only on rows emitted by a sub-agent (dynamic instances); Confucius top-level rows and user rows omit it, and rows written before migration 014 are null. Rows stay in arrival order (msg_time, msg_index) — consumers regroup interleaved same-agent rows by (agent, agent_instance_id) to recover each invocation's coherent output. */
             run_id?: string | null;
@@ -2137,6 +2291,36 @@ export interface components {
             arguments: {
                 [key: string]: unknown;
             };
+            /** @description Present only on spawn_subagent tool calls whose dispatched child instance has a durable terminal run row in the same session: the child instance id the frontend uses to recursively lazy-load the next tree level through the sub-agent run APIs. Omitted on ordinary tool calls and on spawns without a terminal child row (bad-args or budget failures, still-running children, legacy identities). */
+            sub_agent_instance_id?: string;
+            /** @description Stable attribution label of the linked child instance. */
+            sub_agent_name?: string;
+        };
+        /** @description One image attachment reference embedded in a message row (messages.attachments_json, add-image-attachments). filename/mime are denormalized from the registry at send time; attachment metadata is immutable so the copy never drifts. */
+        AttachmentRef: {
+            /**
+             * Format: uuid
+             * @description The attachment registry id — also the content-endpoint key.
+             */
+            id: string;
+            /** @description Original client filename (display only). */
+            filename: string;
+            /** @enum {string} */
+            mime: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+        };
+        /** @description A registered chat image attachment. The bytes live at `data/{user}/attachments/{session}/{id}.{ext}` and are immutable — re-uploading the same image yields a NEW id. */
+        AttachmentUploadResponse: {
+            /** Format: uuid */
+            attachment_id: string;
+            /** @description Sanitized original filename (display only). */
+            filename: string;
+            /**
+             * @description MIME sniffed from the file header magic bytes (never the client declaration or extension).
+             * @enum {string}
+             */
+            mime: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+            /** Format: int64 */
+            size: number;
         };
         SubAgentTranscriptItem: {
             /**
@@ -2163,6 +2347,8 @@ export interface components {
             run_id: string;
             /** @description Predecessor run when this execution resumed an instance. */
             previous_run_id?: string;
+            /** @description Parent sub-agent instance that dispatched this run. Omitted for root dispatches (spawned directly by the main agent). */
+            parent_instance_id?: string;
             /** @description Linear execution number within the instance. */
             run_no: number;
             /** @description Stable sub-agent attribution label. */
@@ -2182,6 +2368,7 @@ export interface components {
          *         {
          *           "agent_instance_id": "w-9f2d4c",
          *           "run_id": "call_019glegacy",
+         *           "parent_instance_id": "w-parent01",
          *           "run_no": 1,
          *           "name": "researcher#w-9f2d4c",
          *           "status": "completed",
@@ -2200,6 +2387,7 @@ export interface components {
          *       "agent_instance_id": "w-9f2d4c",
          *       "run_id": "call_019glegacy",
          *       "previous_run_id": "call_019gprevious",
+         *       "parent_instance_id": "w-parent01",
          *       "run_no": 2,
          *       "name": "researcher#w-9f2d4c",
          *       "status": "completed",
@@ -2222,6 +2410,15 @@ export interface components {
          *               "arguments": {
          *                 "command": "rg regression"
          *               }
+         *             },
+         *             {
+         *               "id": "call_spawn_1",
+         *               "name": "spawn_subagent",
+         *               "arguments": {
+         *                 "task": "dig deeper"
+         *               },
+         *               "sub_agent_instance_id": "w-child02",
+         *               "sub_agent_name": "digger#w-child02"
          *             }
          *           ]
          *         },
@@ -2266,6 +2463,19 @@ export interface components {
              * @enum {string}
              */
             reasoning_effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
+            /**
+             * @description Image attachments previously uploaded to this session via
+             *     `POST /api/v1/sessions/{session_id}/attachments`
+             *     (add-image-attachments). Each id must resolve against the
+             *     attachment registry's (id, user, session) ownership triple — an
+             *     unknown or foreign id returns 404. The turn's resolved model must
+             *     carry the catalog `vision` capability; otherwise the request is
+             *     rejected with 400 `MODEL_NOT_VISION` before any persistence. The
+             *     current turn's model request inlines the images as `image_url`
+             *     content parts; from the next turn on they replay as deterministic
+             *     text placeholders. Empty/omitted is the plain-text request.
+             */
+            attachment_ids?: string[];
         };
         TurnStatusResponse: {
             run_id: string;
@@ -2733,6 +2943,8 @@ export interface components {
             max_completion_tokens: number;
             /** @description Whether the model supports reasoning (gates non-`none` reasoning_effort values). */
             thinking: boolean;
+            /** @description Whether the model accepts image attachments on user messages (add-image-attachments). Requests carrying `attachment_ids` that resolve to a `vision: false` entry are rejected with 400 `MODEL_NOT_VISION`. Defaults to false in configuration (`openai.models[].vision`). */
+            vision: boolean;
         };
         /**
          * @description Per-user LLM gateway token status (user-llm-token). The raw token is
