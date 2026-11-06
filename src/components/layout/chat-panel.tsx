@@ -9,6 +9,8 @@ import { CatalogueButton } from '@/components/chat/catalogue-button';
 import { SelectionQuoteButton } from '@/components/chat/selection-quote-button';
 import { PlanStatusBar } from '@/components/chat/plan-status-bar';
 import { SubAgentFloatWindow } from '@/components/chat/sub-agent-float-window';
+import { PendingQueue } from '@/components/chat/pending-queue';
+import { InlineNotices } from '@/components/chat/inline-notices';
 
 export function ChatPanel() {
   const activeSessionId = useUIStore((s) => s.activeSessionId);
@@ -121,6 +123,10 @@ export function ChatPanel() {
       {activeSessionId && activeSessionId !== DRAFT_SESSION_ID && <SubAgentFloatWindow />}
 
       <div className="border-t border-white/40 p-3">
+        {/* 非弹窗提示（D7）与待发送队列展示（D3）都在输入区上方；草稿哨兵没有
+            服务端队列，不挂查询（spec）。 */}
+        <InlineNotices />
+        {activeSessionId && activeSessionId !== DRAFT_SESSION_ID && <PendingQueue />}
         <MessageInput disabled={!activeSessionId} />
       </div>
     </div>

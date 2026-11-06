@@ -430,8 +430,9 @@ export function MessageList() {
     activeSessionId ? s.turnRuns[activeSessionId] ?? null : null
   );
   // 实时产物条暂存（done.meta.artifacts → reconcile 历史接管后清空）。
+  // adapt-session-message-queue：条目带 owner run id（ui-store 形状变更）。
   const liveArtifacts = useUIStore((s) =>
-    activeSessionId ? s.turnArtifacts[activeSessionId] ?? EMPTY_ARTIFACTS : EMPTY_ARTIFACTS
+    activeSessionId ? s.turnArtifacts[activeSessionId]?.artifacts ?? EMPTY_ARTIFACTS : EMPTY_ARTIFACTS
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);

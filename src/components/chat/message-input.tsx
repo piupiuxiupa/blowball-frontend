@@ -16,7 +16,8 @@ import { ContextPicker, type PickerEntry, type PickerTab } from '@/components/ch
 import { ComposerAttachmentChips } from '@/components/chat/attachment-chips';
 import { ComposerImageChips } from '@/components/chat/image-attachment-chips';
 import { serializeAdditionalContext } from '@/lib/additional-context';
-import type { AttachmentRef } from '@/lib/api';
+import { ApiRequestError, type AttachmentRef } from '@/lib/api';
+import { useNoticeStore } from '@/stores/notice-store';
 import { PATH_MIME, PATH_TYPE_MIME } from '@/lib/workspace-dnd';
 import { useAttachmentStore } from '@/stores/attachment-store';
 import { DRAFT_SESSION_ID, useUIStore } from '@/stores/ui-store';
@@ -49,39 +50,69 @@ function scanTrigger(text: string, caret: number): TriggerMatch | null {
   return null;
 }
 
+// 发送请求拒绝原因 → 非弹窗提示文案（D7：区分「未发送」与已接受；QUEUE_FULL 不
+// 自动 attach、不假定容量；SESSION_BUSY 是队列关闭部署的兼容路径——静默转 attach
+// 已在 mutation onError 处理，这里只说明本条未被接受）。
+function describeSendError(err: unknown): string {
+  if (err instanceof ApiRequestError) {
+    switch (err.code) {
+      case 'SESSION_BUSY':
+        return '会话正在生成且未开启排队，本条消息未发送（已接入当前生成，内容已保留）';
+      case 'QUEUE_FULL':
+        return '等待队列已满，本条消息未发送；可稍后重试，或先撤回等待中的消息';
+      case 'INVALID_MODEL':
+      case 'INVALID_EFFORT':
+      case 'MODEL_NOT_VISION':
+      case 'CONTENT_TOO_LONG':
+      case 'REQUEST_TOO_LARGE':
+        return `消息被拒绝：${err.message}`;
+      default:
+        return `发送失败：${err.message}`;
+    }
+  }
+  return `发送失败：${err instanceof Error ? err.message : String(err)}`;
+}
+
 export function MessageInput({ disabled }: MessageInputProps) {
   const [content, setContent] = useState('');
-  // 取消中：已请求取消、终局事件未到（取消是异步三态，他副本路径 ≤ 心跳周期）。
-  // 期间停止按钮禁用防抖；终局到达后 busy 翻 false 复位。取消端点幂等，即便重复
-  // 触发也无副作用，这里是纯 UI 防抖。
-  const [stopping, setStopping] = useState(false);
-  // 草稿首条消息的建会话阶段（create-first 编排）：期间输入与按钮禁用，
+  // 停止中：绑定取消目标 run id（4.2）——目标终局或 active run 变化即复位，
+  // 不能等全局 busy 翻 false，否则连续执行会把下一轮停止按钮一直锁住。取消端点
+  // 幂等，重复触发无副作用，这里是纯 UI 防抖。
+  const [stoppingRunId, setStoppingRunId] = useState<string | null>(null);
+  // 草稿首条消息的建会话阶段（create-first 编排）：期间发送按钮禁用，
   // 防双击连建两个会话。
   const [creatingDraft, setCreatingDraft] = useState(false);
   // 待发送图片（add-image-attachments，design D7）：本地 File + blob 预览，选题零请求；
   // 上传发生在发送时。切换会话不清空（与上下文附加同语义），卸载时统一 revoke。
   const [pendingImages, setPendingImages] = useState<PendingImageAttachment[]>([]);
-  // 发送前的上传阶段：期间整体 busy，防止上传中重复提交。
+  // 发送前的上传阶段：期间发送按钮禁用，防止上传中重复提交。
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadImages = useImageAttachmentUpload();
   const activeSessionId = useUIStore((s) => s.activeSessionId);
-  // 本会话有活跃 turn（发送流进行中或 attach 中）即视为忙碌——attach 不是
-  // mutation、不占 isPending，但运行中会话再发必 409，输入一律禁用。
-  const turnActive = useUIStore((s) =>
-    s.activeSessionId != null && s.turnRuns[s.activeSessionId] != null,
+  // 活跃 run（运行/attach 期间）：停止按钮的取消目标。运行本身不再禁用编辑
+  //（5.1：运行中允许编辑正文、选模型、附加上下文/图片并继续提交——队列接受等待）。
+  const activeRunId = useUIStore((s) =>
+    s.activeSessionId != null ? s.turnRuns[s.activeSessionId] ?? null : null,
   );
-  const { mutate: sendMessage, isPending, variables, isError } = useSendMessage();
+  const { mutate: sendMessage, isPending, variables, isError, error, isSuccess } = useSendMessage();
   const { createSessionAsync } = useSessions();
   // 下一次发送的模型/思考等级（per-request-model）;null = 不发参数跟随后端缺省。
   const selectedModel = useUIStore((s) => s.selectedModel);
   const selectedEffort = useUIStore((s) => s.selectedEffort);
-  // isPending 是 mutation 实例级的(全局):会话 A 生成中切到会话 B 时它仍为 true,
-  // 会把 B 的按钮错显成停止态。用「最近一次发送的 sessionId === 当前会话」把
-  // pending 归属到会话,跨会话互不干扰(流式分段本就按会话隔离)。
-  const sendingHere = isPending && variables?.sessionId === activeSessionId;
+  // 提交确认等待（5.1 的提交状态，与运行状态分离）：isPending 是 mutation 实例级
+  //（全局），用「最近一次发送的 sessionId === 当前会话」归属到会话，跨会话互不
+  // 干扰。仅锁定发送动作，不锁定正文/模型/附件。
+  const awaitingConfirm = isPending && variables?.sessionId === activeSessionId;
+  // 发送动作防重：建会话 / 上传 / 等待本条提交确认（spec：提交中防重复）。
+  const sendLocked = creatingDraft || uploading || awaitingConfirm;
 
-  const busy = turnActive || sendingHere || creatingDraft || uploading;
+  // 停止中状态复位（4.2）：目标 run 终局（登记释放）或被新 run 接管时。
+  useEffect(() => {
+    if (stoppingRunId != null && activeRunId !== stoppingRunId) {
+      setStoppingRunId(null);
+    }
+  }, [activeRunId, stoppingRunId]);
 
   // ---- 图片附件（add-image-attachments）----
   // 当前待发送图片的渲染期快照：校验与副作用（alert / createObjectURL /
@@ -237,43 +268,56 @@ export function MessageInput({ disabled }: MessageInputProps) {
     closePicker();
   };
 
-  // 请求级失败（网络/409/400 等，消息未被接受）时恢复输入文本与附件 chips——提交时
-  // 是乐观清空，失败后内容不该丢。isError 在下次提交时复位，effect 只在错误出现时
-  // 触发一次。恢复用的是提交时快照（variables.text / variables.items），不是全量
-  // content（含序列化块，不能回灌 textarea）。
+  // 服务端接受后清空匹配的输入快照（5.2 的清空边界：不再无条件乐观清空 + 失败全局
+  // 恢复——失败时输入从未清空，无需恢复；成功也只在「同一会话 + 草稿未修订」时清
+  // 空，旧请求的迟到结果不覆盖新草稿）。修订判据用引用/值比较：正文等于提交快照、
+  // 图片/上下文数组仍是提交时的引用（任何增删都会换引用）。clearedFor 防重入（同
+  // 一条提交只清一次，用户回敲出与快照相同的正文不会被再次清空）。
+  const clearedForRef = useRef<unknown>(null);
   useEffect(() => {
-    if (isError && variables) {
-      setContent(variables.text);
-      useAttachmentStore.getState().restore(variables.items, variables.references);
-      // 图片现场恢复（spec「非 vision 模型发送被拒」）：提交时已 revoke 快照的
-      // blob URL，这里从 File 重新生成本地预览，上传 id 缓存仍在、可直接重发。
-      if (variables.images && variables.images.length > 0) {
-        setPendingImages(
-          variables.images.map(({ uid, file }) => ({
-            uid,
-            file,
-            previewUrl: URL.createObjectURL(file),
-          }))
-        );
-      }
-    }
-  }, [isError, variables]);
+    if (!isSuccess || !variables) return;
+    if (clearedForRef.current === variables) return;
+    if (variables.sessionId !== activeSessionId) return;
+    if (content !== variables.text) return;
+    // 图片修订判定：提交带图片时引用比较（任何增删换引用）；未带图片时输入区
+    // 仍为空才算未修订（确认期间新增的图片属于新草稿，不清）。
+    const imagesUnchanged =
+      variables.images === undefined
+        ? pendingImages.length === 0
+        : pendingImages === variables.images;
+    if (!imagesUnchanged) return;
+    const store = useAttachmentStore.getState();
+    if (store.items !== variables.items || store.references !== variables.references) return;
+    clearedForRef.current = variables;
+    setContent('');
+    useAttachmentStore.getState().clear();
+    variables.images?.forEach((image) => URL.revokeObjectURL(image.previewUrl));
+    setPendingImages([]);
+    // content/pendingImages 的依赖缺省是有意的：清空动作本身只应在接受瞬间执行
+    // 一次，后续修订不应重触发（clearedFor 已防重入）。
+  }, [isSuccess, variables]);
 
+  // 请求级失败（QUEUE_FULL / SESSION_BUSY / 拒绝 / 网络等）的非弹窗提示（5.4）：
+  // 输入与附件现场从未清空、保留可重试；已接受的连接问题走订阅恢复，不重发 POST。
+  const notifiedForRef = useRef<unknown>(null);
   useEffect(() => {
-    if (!busy) setStopping(false);
-  }, [busy]);
+    if (!isError || !error || !variables) return;
+    if (notifiedForRef.current === variables) return;
+    notifiedForRef.current = variables;
+    useNoticeStore.getState().push(describeSendError(error));
+  }, [isError, error, variables]);
 
   // create-first 编排（lazy-session-creation）：草稿态的首条消息先真实建会话再发送。
   // 放在 mutate 之外（而非塞进 mutationFn）——乐观消息 onMutate 按 sessionId 键控缓存,
   // 此时以真实 id 调用,乐观消息直接落在正确键下,零缓存迁移;既有发送路径一行不改。
   // createSessionAsync 的 onSuccess 已把活动会话切到新 id（见 use-sessions）。
-  // 失败语义:创建失败留草稿、文本保留;清空仅在成功入队后(请求级失败由上方
-  // isError effect 恢复文本兜底)。
+  // 失败语义:创建失败留草稿、文本保留;清空只在服务端接受且草稿未修订时发生
+  //（见上方 isSuccess effect），任何失败路径都无需恢复输入。
   const handleSubmit = async () => {
-    if (!activeSessionId || !content.trim() || busy) return;
+    if (!activeSessionId || !content.trim() || sendLocked) return;
     const text = content.trim();
     // 序列化（design D3）：块置于 content 最前，与正文空行分隔；全部为空返回 null，
-    // content 与现状完全一致。快照随 mutation 带上，失败时恢复。
+    // content 与现状完全一致。快照随 mutation 带上，供接受后的清空匹配判定（5.2）。
     const items = useAttachmentStore.getState().items;
     const references = useAttachmentStore.getState().references;
     const block = serializeAdditionalContext(items, references);
@@ -317,10 +361,7 @@ export function MessageInput({ disabled }: MessageInputProps) {
         reasoningEffort: selectedEffort ?? undefined,
         ...(attachmentIds && imageAttachments ? { attachmentIds, imageAttachments, images } : {}),
       });
-      setContent('');
-      useAttachmentStore.getState().clear();
-      images.forEach((image) => URL.revokeObjectURL(image.previewUrl));
-      setPendingImages([]);
+      // 不乐观清空：接受后由 isSuccess effect 按匹配修订清空（5.2）；失败时现场保留。
     };
 
     if (activeSessionId === DRAFT_SESSION_ID) {
@@ -340,14 +381,13 @@ export function MessageInput({ disabled }: MessageInputProps) {
     await send(activeSessionId);
   };
 
-  // 停止 = 显式取消 turn（turn-detach-resume：断开连接不再取消）。取消后本端
+  // 停止 = 显式取消当前活跃 run（turn-detach-resume：断开连接不再取消）。取消后本端
   // 继续消费既有流至终局事件，部分输出经 reconcile 落显——这里只发取消请求。
+  // 只针对当前 run（4.2）：不清等待队列（后端取消当前 run 保留其他排队项）。
   const handleStop = () => {
-    if (!activeSessionId || !busy) return;
-    const runId = useUIStore.getState().turnRuns[activeSessionId];
-    if (!runId) return;
-    setStopping(true);
-    void cancelTurn(activeSessionId, runId);
+    if (!activeSessionId || !activeRunId || stoppingRunId != null) return;
+    setStoppingRunId(activeRunId);
+    void cancelTurn(activeSessionId, activeRunId);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -444,7 +484,7 @@ export function MessageInput({ disabled }: MessageInputProps) {
           variant="ghost"
           size="sm"
           className="h-7 px-2 text-xs text-muted-foreground"
-          disabled={disabled || busy || pendingImages.length >= MAX_MESSAGE_IMAGES}
+          disabled={disabled || pendingImages.length >= MAX_MESSAGE_IMAGES}
           title="附加图片（每条消息最多 4 张，单张 ≤8MiB）"
           aria-label="附加图片"
           onClick={() => fileInputRef.current?.click()}
@@ -456,7 +496,7 @@ export function MessageInput({ disabled }: MessageInputProps) {
           variant="ghost"
           size="sm"
           className="h-7 px-2 text-xs text-muted-foreground"
-          disabled={disabled || busy}
+          disabled={disabled}
           title="附加技能 (Skills)"
           aria-label="附加技能"
           onClick={() => setButtonTab(buttonTab === 'tools' ? null : 'tools')}
@@ -467,7 +507,7 @@ export function MessageInput({ disabled }: MessageInputProps) {
           variant="ghost"
           size="sm"
           className="h-7 px-2 text-xs text-muted-foreground"
-          disabled={disabled || busy}
+          disabled={disabled}
           title="附加工具 (MCP Tools)"
           aria-label="附加工具"
           onClick={() => setButtonTab(buttonTab === 'tools' ? null : 'tools')}
@@ -497,19 +537,36 @@ export function MessageInput({ disabled }: MessageInputProps) {
             if (pickerOpen) closePicker();
           }}
           placeholder={disabled ? '先选择一个会话' : '输入消息，@ 附加文件，/ 选择技能工具'}
-          disabled={disabled || busy}
+          disabled={disabled}
           rows={3}
           className={dragOver ? 'min-h-[80px] flex-1 ring-2 ring-inset ring-primary/40' : 'min-h-[80px] flex-1'}
         />
+        {/* 发送与停止为独立按钮（5.1）：发送按提交状态锁定（上传/建会话/确认等待/
+            正文为空），运行状态不影响发送；停止仅在有活跃 run 时出现，取消目标绑定
+            该 run（不撤等待队列）。 */}
         <Button
-          onClick={busy ? handleStop : handleSubmit}
-          disabled={disabled || stopping || (!busy && !content.trim())}
+          onClick={handleSubmit}
+          disabled={disabled || sendLocked || !content.trim()}
           size="icon"
           className="h-9 w-9 shrink-0"
-          variant={busy ? 'destructive' : 'default'}
+          title="发送消息（运行中会话将排队等待）"
+          aria-label="发送消息"
         >
-          {busy ? <Square className="h-4 w-4 fill-current" /> : <Send className="h-4 w-4" />}
+          <Send className="h-4 w-4" />
         </Button>
+        {activeRunId != null && (
+          <Button
+            onClick={handleStop}
+            disabled={disabled || stoppingRunId != null}
+            size="icon"
+            variant="destructive"
+            className="h-9 w-9 shrink-0"
+            title="停止当前生成（保留等待中的消息）"
+            aria-label="停止当前生成"
+          >
+            <Square className="h-4 w-4 fill-current" />
+          </Button>
+        )}
       </div>
     </div>
   );

@@ -43,6 +43,99 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload a chat image attachment without a session (add-staged-attachment-upload).
+         * @description Registers one chat image BEFORE any session exists, so clients can
+         *     upload the moment an image is picked instead of blocking the first
+         *     send on a slow network. The MIME sniffing, format allowlist
+         *     (`image/png`, `image/jpeg`, `image/webp`, `image/gif`), 8 MiB cap,
+         *     and immutability contract are identical to the session-scoped
+         *     endpoint. Bytes land at
+         *     `data/{user}/attachments/_staging/{uuid}.{ext}` and the registry row
+         *     is born STAGED (`session_id` NULL): it is not served by the content
+         *     endpoint and not attached to any message until
+         *     `POST .../sessions/{session_id}/messages` references the id, which
+         *     claims the attachment into that session atomically (first claimant
+         *     wins; every later session gets 404).
+         *
+         *     Staged attachments are a bounded resource: at most 20 unbound uploads
+         *     per user (429 past that), and any staged image still unclaimed after
+         *     24 hours is reaped by the orphan sweeper.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "multipart/form-data": {
+                        /**
+                         * Format: binary
+                         * @description The image bytes (≤ 8 MiB; magic-byte sniffed).
+                         */
+                        file: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Attachment registered (staged, unbound). */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AttachmentUploadResponse"];
+                    };
+                };
+                /** @description `UNSUPPORTED_IMAGE_TYPE`: the sniffed type is not one of the four accepted image formats. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                /** @description `FILE_TOO_LARGE`: the file exceeds 8 MiB. */
+                413: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description `TOO_MANY_STAGED_ATTACHMENTS`: the per-user staged quota (20 unbound uploads) is exhausted. */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                500: components["responses"]["Internal"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -282,6 +375,61 @@ export interface paths {
                 500: components["responses"]["Internal"];
             };
         };
+        trace?: never;
+    };
+    "/api/v1/sessions/{session_id}/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the session's queued messages (session-message-queue).
+         * @description Returns the messages waiting in the session's FIFO queue, in enqueue
+         *     order (session-message-queue, requires `messages.queue.enabled`).
+         *     This is the authoritative channel for a reloaded frontend to rebuild
+         *     its pending-message bubbles: a queued message is NOT in the
+         *     message-history endpoint until its turn starts (the user row is
+         *     persisted at continuation time), so the queue endpoint plus the
+         *     session detail's `queued_count` carry the waiting state. Entries
+         *     carry the admission-time snapshot fields; `run_id` doubles as the
+         *     cancel target (POST `.../turns/{run_id}/cancel` removes the entry)
+         *     and the SSE attach id once the turn starts. A queue-read failure
+         *     degrades to an empty 200 (the queue is presentation-state; the
+         *     entries themselves are the durable record until their turns run).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    session_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The session's queued entries in enqueue order. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SessionQueueResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                404: components["responses"]["NotFound"];
+                500: components["responses"]["Internal"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/sessions/{session_id}/subagents/{agent_instance_id}/runs": {
@@ -664,7 +812,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "text/event-stream": components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEReasoning"] | components["schemas"]["SSEToolCall"] | components["schemas"]["SSEToolResult"] | components["schemas"]["SSEPlanUpdated"] | components["schemas"]["SSEAgentEnd"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEArtifact"] | components["schemas"]["SSEDone"];
+                        "text/event-stream": components["schemas"]["SSEQueued"] | components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEReasoning"] | components["schemas"]["SSEToolCall"] | components["schemas"]["SSEToolResult"] | components["schemas"]["SSEPlanUpdated"] | components["schemas"]["SSEAgentEnd"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEArtifact"] | components["schemas"]["SSEDone"];
                     };
                 };
                 /**
@@ -691,8 +839,12 @@ export interface paths {
                 404: components["responses"]["NotFound"];
                 /**
                  * @description The session already has a running turn (single active run per
-                 *     session). The error object carries the active `run_id` so the
-                 *     client can attach to the running turn instead of retrying.
+                 *     session) — with `messages.queue.enabled` false (the default). The
+                 *     error object carries the active `run_id` so the client can attach
+                 *     to the running turn instead of retrying. With the queue enabled,
+                 *     the busy case is instead ACCEPTED (200, `queued` event); the 409
+                 *     here is then only `QUEUE_FULL`: the session's queue already holds
+                 *     `messages.queue.max_depth` entries.
                  */
                 409: {
                     headers: {
@@ -702,10 +854,10 @@ export interface paths {
                         "application/json": {
                             error: {
                                 /** @enum {string} */
-                                code: "SESSION_BUSY";
+                                code: "SESSION_BUSY" | "QUEUE_FULL";
                                 message: string;
-                                /** @description The currently running turn's run id (attach target). */
-                                run_id: string;
+                                /** @description Present on SESSION_BUSY only — the currently running turn's run id (attach target). */
+                                run_id?: string;
                             };
                         };
                     };
@@ -746,14 +898,20 @@ export interface paths {
         /**
          * Cancel a running turn by run id (turn-detach-resume).
          * @description Cancels the turn identified by `run_id` and releases its resources.
-         *     Three outcomes: the run is in THIS agent process (cancelled
+         *     Four outcomes: the run is in THIS agent process (cancelled
          *     immediately, partial output persists through the interrupted-turn
          *     path), the run heartbeats on another replica (a Redis cancel flag is
-         *     raised; the owning process cancels within one heartbeat period), or
-         *     the run is dead (crashed process — force-cleared to `interrupted`,
-         *     session unlocked). Cancelling an already-terminal run is idempotent
-         *     and reports the terminal status. The run must belong to the caller
-         *     and the path session, otherwise 404.
+         *     raised; the owning process cancels within one heartbeat period), the
+         *     run is dead (crashed process — force-cleared to `interrupted`,
+         *     session unlocked), or the run is QUEUED (session-message-queue: the
+         *     message is waiting in the session's queue — it is dequeued, the run
+         *     reports `cancelled`, and its waiting SSE subscribers close). A queued
+         *     run has no heartbeat by design and must never be misread as dead.
+         *     Cancelling the running turn leaves the session's other queued
+         *     messages intact (they continue as usual). Cancelling an
+         *     already-terminal run is idempotent and reports the terminal status.
+         *     The run must belong to the caller and the path session, otherwise
+         *     404.
          */
         post: {
             parameters: {
@@ -805,7 +963,11 @@ export interface paths {
          *     retention window passed (or never existed) returns 410 — fall back to
          *     the ordinary message-history read. If a status-running run's process
          *     died, the stream replays what was logged, then emits a synthesized
-         *     terminal `done` event carrying `usage.error = "interrupted..."`.
+         *     terminal `done` event carrying `usage.error = "interrupted..."`. A
+         *     QUEUED run (session-message-queue) tails its `queued` event and waits
+         *     — it has no heartbeat by design and is never misread as dead; the
+         *     turn's events follow on the same stream once the queue continues
+         *     it.
          */
         get: {
             parameters: {
@@ -834,7 +996,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "text/event-stream": components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEPlanUpdated"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEArtifact"] | components["schemas"]["SSEDone"];
+                        "text/event-stream": components["schemas"]["SSEQueued"] | components["schemas"]["SSEAgentStart"] | components["schemas"]["SSEToken"] | components["schemas"]["SSEPlanUpdated"] | components["schemas"]["SSEAgentError"] | components["schemas"]["SSEArtifact"] | components["schemas"]["SSEDone"];
                     };
                 };
                 401: components["responses"]["Unauthorized"];
@@ -2179,9 +2341,40 @@ export interface components {
              *     saw when the turn started, so it recovers the run id from here.
              */
             run_id?: string;
+            /**
+             * @description How many of the user's messages wait in the session's queue
+             *     (session-message-queue). Present only when
+             *     `messages.queue.enabled` is true AND the depth is > 0; omitted
+             *     otherwise (additive — old clients ignore it). The pending
+             *     messages themselves come from
+             *     `GET /api/v1/sessions/{session_id}/queue`.
+             */
+            queued_count?: number;
         };
         SessionListResponse: {
             sessions: components["schemas"]["SessionListEntry"][];
+        };
+        SessionQueueEntry: {
+            /**
+             * @description The queued message's run id — the enqueueing request's trace id.
+             *     Doubles as the cancel target while queued (dequeue) and as the
+             *     SSE attach id once the pump starts its turn.
+             */
+            run_id: string;
+            /** @description The message content as sent (before the environment status suffix). */
+            content: string;
+            /** @description The resolved catalog model name the turn will run on. */
+            model: string;
+            /**
+             * Format: date-time
+             * @description Admission (request arrival) time. Display only — the persisted user row takes the continuation time.
+             */
+            enqueued_at: string;
+            /** @description Image attachment references carried by the message. */
+            attachments?: components["schemas"]["AttachmentRef"][];
+        };
+        SessionQueueResponse: {
+            queue: components["schemas"]["SessionQueueEntry"][];
         };
         /**
          * @description Single-session read (GET /api/v1/sessions/{session_id}) — the
@@ -2213,6 +2406,12 @@ export interface components {
              *     while `generating` is true (the reload discovery path).
              */
             run_id?: string;
+            /**
+             * @description The session's queued-message count (session-message-queue),
+             *     mirroring the list entry: present only when
+             *     `messages.queue.enabled` is true AND the depth is > 0.
+             */
+            queued_count?: number;
         };
         CreateSessionResponse: {
             /**
@@ -2464,16 +2663,20 @@ export interface components {
              */
             reasoning_effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
             /**
-             * @description Image attachments previously uploaded to this session via
+             * @description Image attachments uploaded either to this session via
              *     `POST /api/v1/sessions/{session_id}/attachments`
-             *     (add-image-attachments). Each id must resolve against the
-             *     attachment registry's (id, user, session) ownership triple — an
-             *     unknown or foreign id returns 404. The turn's resolved model must
-             *     carry the catalog `vision` capability; otherwise the request is
-             *     rejected with 400 `MODEL_NOT_VISION` before any persistence. The
-             *     current turn's model request inlines the images as `image_url`
-             *     content parts; from the next turn on they replay as deterministic
-             *     text placeholders. Empty/omitted is the plain-text request.
+             *     (add-image-attachments) or staged session-independently via
+             *     `POST /api/v1/attachments` (add-staged-attachment-upload). Each
+             *     id must belong to the authenticated user AND be bound to this
+             *     session or still be staged; a staged id is claimed into this
+             *     session atomically on send (first claimant wins). Unknown,
+             *     foreign, already-claimed-elsewhere, or claim-lost ids return 404.
+             *     The turn's resolved model must carry the catalog `vision`
+             *     capability; otherwise the request is rejected with 400
+             *     `MODEL_NOT_VISION` before any persistence. The current turn's
+             *     model request inlines the images as `image_url` content parts;
+             *     from the next turn on they replay as deterministic text
+             *     placeholders. Empty/omitted is the plain-text request.
              */
             attachment_ids?: string[];
         };
@@ -2481,11 +2684,35 @@ export interface components {
             run_id: string;
             /**
              * @description `cancelling` — accepted; the owning process will finalize the run
-             *     (persisting partial output). The remaining values are terminal
-             *     states reported by idempotent cancels of finished runs.
+             *     (persisting partial output). `queued` — the message is still
+             *     waiting in the session's queue (session-message-queue; returned
+             *     when a cancel races the queue pump, retry to catch the run once
+             *     it starts). The remaining values are terminal states reported by
+             *     idempotent cancels of finished runs — including cancels of
+             *     queued-but-never-started runs, which dequeue the message and
+             *     report `cancelled`.
              * @enum {string}
              */
-            status: "cancelling" | "running" | "done" | "error" | "cancelled" | "interrupted";
+            status: "cancelling" | "running" | "queued" | "done" | "error" | "cancelled" | "interrupted";
+        };
+        /**
+         * @description Queue admission announcement (session-message-queue): the FIRST event
+         *     on a queued run's log, written at enqueue time — the POST /messages
+         *     SSE stream opens with it, then tails (possibly for a long time) until
+         *     the previous turn finishes and the pump starts this message's turn;
+         *     the turn's `agent_start` and the rest follow on the same stream. Like
+         *     `done` it never passes through a hub and is never persisted as a
+         *     message row; `Last-Event-ID` resume replays it like any other event.
+         */
+        SSEQueued: {
+            /** @enum {string} */
+            type: "queued";
+            meta?: {
+                /** @description The queued message's run id (the future turn's id */
+                run_id?: string;
+                /** @description 1-based queue depth at admission time (informational). */
+                queue_position?: number;
+            };
         };
         SSEAgentStart: {
             /** @enum {string} */

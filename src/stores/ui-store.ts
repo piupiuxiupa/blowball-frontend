@@ -35,6 +35,10 @@ export interface StreamingSegment {
   runId: string;
   // 跨 resume 稳定的动态子 Agent 实例身份；空串 = 存量事件/顶层回合。
   agentInstanceId: string;
+  // 顶层 owner（adapt-session-message-queue D5）：产生本段的 turn run id。与子 Agent
+  // 的 runId（父 tool_call id）语义不同——按 run 条件清理时用它判归属，旧 run 的迟到
+  // 收尾不得删除新 run 的段。空串 = run 身份未知（契约兜底路径），随任一 run 收尾清理。
+  ownerRunId: string;
   content: string;
   reasoning: string;
   // 正文片段与工具记录的事件序列。content 仍保留聚合文本便于兼容/诊断，
@@ -47,6 +51,8 @@ export interface StreamingSegment {
 export interface SegmentRoute {
   runId?: string;
   agentInstanceId?: string;
+  // 顶层 owner run id（段归属判据，见 StreamingSegment.ownerRunId）。
+  ownerRunId?: string;
 }
 
 // 子 Agent 浮窗打开态（subagent-float-window design D2）：按身份解析内容——
@@ -77,9 +83,9 @@ interface UIState {
   versionDrawerOpen: boolean;
   // 当前在主编辑区只读预览的历史版本 id；null = 正常编辑/查看态。
   previewVersionId: string | null;
-  // 实时流暂存的本 turn 产物（done.meta.artifacts）；历史落库接管后清空
-  // （见 turn-stream / reconcileTurnHistory）。
-  turnArtifacts: Record<string, ArtifactInfo[]>;
+  // 实时流暂存的本 turn 产物（done.meta.artifacts）；带 owner run id——历史落库接管后
+  // 清空（见 turn-stream / reconcileTurnHistory），旧 run 的迟到收尾不清新 run 的暂存。
+  turnArtifacts: Record<string, { runId: string; artifacts: ArtifactInfo[] }>;
   sidebarCollapsed: boolean;
   showHiddenFiles: boolean;
   streamingSegments: Record<string, StreamingSegment[]>;
@@ -101,8 +107,8 @@ interface UIState {
   setFileViewMode: (mode: FileViewMode) => void;
   setVersionDrawerOpen: (open: boolean) => void;
   setPreviewVersionId: (id: string | null) => void;
-  setTurnArtifacts: (sessionId: string, artifacts: ArtifactInfo[]) => void;
-  clearTurnArtifacts: (sessionId: string) => void;
+  setTurnArtifacts: (sessionId: string, runId: string, artifacts: ArtifactInfo[]) => void;
+  clearTurnArtifacts: (sessionId: string, runId?: string) => void;
   toggleSidebar: () => void;
   toggleShowHiddenFiles: () => void;
   openSubAgent: (win: OpenSubAgentWindowState) => void;
@@ -141,7 +147,7 @@ interface UIState {
     route: SegmentRoute,
     status: AgentStatus
   ) => void;
-  clearStreamingSegments: (sessionId: string) => void;
+  clearStreamingSegments: (sessionId: string, ownerRunId?: string) => void;
 }
 
 // 段 id 单调计数器（模块级，跨会话/回合持续递增）。段仅追加、不重排，故 id 用作稳定 key。
@@ -212,13 +218,17 @@ export const useUIStore = create<UIState>((set) => ({
   setFileViewMode: (mode) => set({ fileViewMode: mode }),
   setVersionDrawerOpen: (open) => set({ versionDrawerOpen: open }),
   setPreviewVersionId: (id) => set({ previewVersionId: id }),
-  setTurnArtifacts: (sessionId, artifacts) =>
+  setTurnArtifacts: (sessionId, runId, artifacts) =>
     set((state) => ({
-      turnArtifacts: { ...state.turnArtifacts, [sessionId]: artifacts },
+      turnArtifacts: { ...state.turnArtifacts, [sessionId]: { runId, artifacts } },
     })),
-  clearTurnArtifacts: (sessionId) =>
+  // 按 owner 条件清空：仅当暂存条目仍属于该 run 时删除（新 run 的 done 已覆写时不动）；
+  // 不传 runId 为无条件清理（会话删除等全局路径）。
+  clearTurnArtifacts: (sessionId, runId) =>
     set((state) => {
-      if (!(sessionId in state.turnArtifacts)) return {};
+      const entry = state.turnArtifacts[sessionId];
+      if (!entry) return {};
+      if (runId !== undefined && entry.runId !== runId) return {};
       const next = { ...state.turnArtifacts };
       delete next[sessionId];
       return { turnArtifacts: next };
@@ -258,6 +268,7 @@ export const useUIStore = create<UIState>((set) => ({
         next[idx] = {
           ...next[idx],
           runId: route.runId ?? '',
+          ownerRunId: route.ownerRunId ?? next[idx].ownerRunId,
           status: 'running',
         };
         return { streamingSegments: { ...state.streamingSegments, [sessionId]: next } };
@@ -268,6 +279,7 @@ export const useUIStore = create<UIState>((set) => ({
         agent,
         runId: route.runId ?? '',
         agentInstanceId: route.agentInstanceId ?? '',
+        ownerRunId: route.ownerRunId ?? '',
         content: '',
         reasoning: '',
         timeline: [],
@@ -298,6 +310,7 @@ export const useUIStore = create<UIState>((set) => ({
         next[idx] = {
           ...seg,
           runId: route.runId || seg.runId,
+          ownerRunId: route.ownerRunId || seg.ownerRunId,
           content: seg.content + chunk,
           timeline: appendTimelineText(seg.timeline, chunk),
         };
@@ -308,6 +321,7 @@ export const useUIStore = create<UIState>((set) => ({
         agent,
         runId: route.runId ?? '',
         agentInstanceId: route.agentInstanceId ?? '',
+        ownerRunId: route.ownerRunId ?? '',
         content: chunk,
         reasoning: '',
         timeline: [{ type: 'text', content: chunk }],
@@ -334,6 +348,7 @@ export const useUIStore = create<UIState>((set) => ({
         next[idx] = {
           ...next[idx],
           runId: route.runId || next[idx].runId,
+          ownerRunId: route.ownerRunId || next[idx].ownerRunId,
           reasoning: next[idx].reasoning + chunk,
         };
         return { streamingSegments: { ...state.streamingSegments, [sessionId]: next } };
@@ -343,6 +358,7 @@ export const useUIStore = create<UIState>((set) => ({
         agent,
         runId: route.runId ?? '',
         agentInstanceId: route.agentInstanceId ?? '',
+        ownerRunId: route.ownerRunId ?? '',
         content: '',
         reasoning: chunk,
         timeline: [],
@@ -391,6 +407,7 @@ export const useUIStore = create<UIState>((set) => ({
         next[idx] = {
           ...seg,
           runId: route.runId || seg.runId,
+          ownerRunId: route.ownerRunId || seg.ownerRunId,
           timeline: appendTimelineTool(seg.timeline, content, options),
           status: 'tool_call',
         };
@@ -401,6 +418,7 @@ export const useUIStore = create<UIState>((set) => ({
         agent,
         runId: route.runId ?? '',
         agentInstanceId: route.agentInstanceId ?? '',
+        ownerRunId: route.ownerRunId ?? '',
         content: '',
         reasoning: '',
         timeline: [{ type: 'tool', content, toolCallId: options.toolCallId }],
@@ -428,6 +446,7 @@ export const useUIStore = create<UIState>((set) => ({
         next[idx] = {
           ...seg,
           runId: route.runId || seg.runId,
+          ownerRunId: route.ownerRunId || seg.ownerRunId,
           timeline: appendTimelinePlan(seg.timeline, content),
         };
         return { streamingSegments: { ...state.streamingSegments, [sessionId]: next } };
@@ -437,6 +456,7 @@ export const useUIStore = create<UIState>((set) => ({
         agent,
         runId: route.runId ?? '',
         agentInstanceId: route.agentInstanceId ?? '',
+        ownerRunId: route.ownerRunId ?? '',
         content: '',
         reasoning: '',
         timeline: [{ type: 'plan', content }],
@@ -461,6 +481,7 @@ export const useUIStore = create<UIState>((set) => ({
       next[idx] = {
         ...seg,
         runId: route.runId || seg.runId,
+        ownerRunId: route.ownerRunId || seg.ownerRunId,
         status,
         isError: status === 'error' ? true : seg.isError,
       };
@@ -468,11 +489,24 @@ export const useUIStore = create<UIState>((set) => ({
     }),
 
   // 回合结束、持久化历史确认落库后清空该会话分段，交由持久化消息块接管渲染。
-  clearStreamingSegments: (sessionId) =>
+  // adapt-session-message-queue D5：带 ownerRunId 时只清理该 run 的段（及身份未知 ''
+  // 的历史遗留段）——A 的迟到收尾不清 B 接管后的输出；不传为全局清理（会话删除）。
+  clearStreamingSegments: (sessionId, ownerRunId) =>
     set((state) => {
-      if (!state.streamingSegments[sessionId]) return {};
+      const prev = state.streamingSegments[sessionId];
+      if (!prev) return {};
+      if (ownerRunId === undefined) {
+        const next = { ...state.streamingSegments };
+        delete next[sessionId];
+        return { streamingSegments: next };
+      }
+      const kept = prev.filter(
+        (segment) => segment.ownerRunId !== ownerRunId && segment.ownerRunId !== '',
+      );
+      if (kept.length === prev.length) return {};
       const next = { ...state.streamingSegments };
-      delete next[sessionId];
+      if (kept.length === 0) delete next[sessionId];
+      else next[sessionId] = kept;
       return { streamingSegments: next };
     }),
 }));

@@ -343,10 +343,20 @@ export type SessionListEntry = NonNullable<SessionListResponse['sessions']>[numb
 // 读取，见 useAttachRun 的双通道发现）；create_time 暂无 UI 消费点。
 export type SessionDetail =
   paths['/api/v1/sessions/{session_id}']['get']['responses']['200']['content']['application/json'];
-// POST /turns/:run_id/cancel 的响应：{run_id, status}，status 含 cancelling（已接受）
-// 与幂等取消已终局 run 时上报的终态。
+// turn 取消响应（cancel 端点）：{run_id, status}。status 枚举见 openapi——
+// cancelling（已接受）/ queued（与 pump 竞争，重试）/ running，及幂等取消已终局
+// run 时的终态（done/error/cancelled/interrupted）。adapt-session-message-queue：
+// 撤回等待项必须观察该返回值（cancelled 才算撤回成功），不能沿用吞结果的包装。
 export type TurnStatusResponse =
   paths['/api/v1/sessions/{session_id}/turns/{run_id}/cancel']['post']['responses']['200']['content']['application/json'];
+// GET /api/v1/sessions/{session_id}/queue：会话 FIFO 等待列表（session-message-queue，
+// queue GET 走 api 分区即 API base——与 POST/attach/cancel 的 agent 分区不同）。
+// run_id 兼作等待期的撤回目标与开始执行后的 attach id；content 为发送原文（含
+// additional_context 序列化块，展示侧解析）；model 是已解析目录名。读取失败后端
+// 降级为空 200——空快照不构成任何终局证明。
+export type SessionQueueResponse =
+  paths['/api/v1/sessions/{session_id}/queue']['get']['responses']['200']['content']['application/json'];
+export type SessionQueueEntry = NonNullable<SessionQueueResponse['queue']>[number];
 // GET /api/v1/models(api 分区):可选模型目录与缺省名。无目录部署时后端合成单条
 // legacy 条目,此时发送侧显式传 model/reasoning_effort 会 400(per-request-model)。
 export type ModelsResponse = paths['/api/v1/models']['get']['responses']['200']['content']['application/json'];
