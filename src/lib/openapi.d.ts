@@ -195,6 +195,376 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/scheduled-tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the authenticated user's tasks
+         * @description Tasks are ordered by creation time and task ID descending; soft-deleted tasks are omitted.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Values above 100 are clamped to 100. */
+                    limit?: number;
+                    offset?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Owner-scoped page. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ScheduledTaskListResponse"];
+                    };
+                };
+                /** @description INVALID_PAGINATION. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Missing or invalid JWT. */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Create a user-owned scheduled task
+         * @description Validates and persists the task but does not execute an Agent. The
+         *     owner comes only from the JWT; client-supplied user identities are not
+         *     accepted. `at` must be future at creation; cron is five-field only.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ScheduledTaskCreate"];
+                };
+            };
+            responses: {
+                /** @description Task created. */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ScheduledTask"];
+                    };
+                };
+                /** @description INVALID_JSON, INVALID_NAME, INVALID_PROMPT, INVALID_SCHEDULE, INVALID_SESSION, INVALID_MODEL, INVALID_EFFORT, or CONTENT_TOO_LONG. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Missing or invalid JWT (UNAUTHORIZED). */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description The existing target session is absent or belongs to another user. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description REQUEST_TOO_LARGE — the JSON body exceeds 1MB. */
+                413: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scheduled-tasks/{task_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        /** Read one scheduled task */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    task_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Task found. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ScheduledTask"];
+                    };
+                };
+                /** @description Missing or invalid JWT. */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Missing, soft-deleted, or owned by another user (NOT_FOUND). */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        /**
+         * Soft-delete a scheduled task
+         * @description Prevents future materialization and cancels occurrences that have not
+         *     crossed the startup fence. Historical occurrence facts and any running
+         *     turn's ordinary session persistence are retained.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    task_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Task soft-deleted; no response body. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Missing or invalid JWT. */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Missing, already deleted, or owned by another user. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        /**
+         * Update, pause, or resume a scheduled task
+         * @description Ordinary edits affect future snapshots only. Pause/delete coordination
+         *     prevents starts before the startup fence; an already-running turn is
+         *     not implicitly cancelled or rerun. Use the ordinary Run cancel endpoint
+         *     for explicit cancellation.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    task_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ScheduledTaskPatch"];
+                };
+            };
+            responses: {
+                /** @description Updated task. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ScheduledTask"];
+                    };
+                };
+                /** @description Invalid schedule, text, model/effort, session policy, or JSON. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Missing or invalid JWT. */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Task or existing target session is absent/foreign. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description REQUEST_TOO_LARGE — the JSON body exceeds 1MB. */
+                413: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/api/v1/scheduled-tasks/{task_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List durable occurrence and execution history
+         * @description Runs are ordered by `scheduled_for` and internal ID descending. This
+         *     MySQL history does not expire with the Redis Run event retention
+         *     window. If the associated session was deleted, execution facts remain
+         *     but conversation content is no longer guaranteed to be readable.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Values above 100 are clamped to 100. */
+                    limit?: number;
+                    offset?: number;
+                };
+                header?: never;
+                path: {
+                    task_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Owner-scoped run-history page. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ScheduledTaskRunListResponse"];
+                    };
+                };
+                /** @description INVALID_PAGINATION. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Missing or invalid JWT. */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Missing, soft-deleted, or owned by another user. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions": {
         parameters: {
             query?: never;
@@ -2277,6 +2647,450 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/scheduled-tasks/{task_id}/resources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Read the task's `.cron` draft and published version metadata
+         * @description Owner-only. Draft files are editable; published revisions are immutable.
+         *     `.cron` is a managed namespace: only authorized draft paths are writable
+         *     through the ordinary workspace endpoints, and bash sees it read-only.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    task_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Draft revision, draft files and version list. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ScheduledResourceGetResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                /** @description Missing task or another user's task (NOT_FOUND). */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Scheduler unavailable (RESOURCE_UNAVAILABLE); no filesystem fallback. */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scheduled-tasks/{task_id}/resources/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publish the draft as an immutable resource revision
+         * @description Copies the draft into a protected staging tree, computes the manifest
+         *     from the actual copied bytes, checks the draft fence and atomically
+         *     publishes. A concurrent draft edit or stale expected_revision returns
+         *     409; a repeated request_id returns the same revision.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    task_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ScheduledResourcePublishRequest"];
+                };
+            };
+            responses: {
+                /** @description Published (or idempotently replayed) revision. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ScheduledResourcePublishResponse"];
+                    };
+                };
+                /** @description INVALID_JSON, INVALID_REQUEST, INVALID_PATH, or RESOURCE_NAMESPACE_CONFLICT. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                /** @description Missing task or another user's task. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description REVISION_CONFLICT — the draft changed or expected_draft_revision is stale. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description RESOURCE_LIMIT — file count / total bytes / single-file cap exceeded. */
+                413: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Scheduler unavailable. */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scheduled-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the user's task execution sessions
+         * @description Independent from the ordinary session list: task sessions never appear
+         *     there and ordinary sessions never appear here. Newest first.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Optional task filter. */
+                    task_id?: string;
+                    limit?: number;
+                    offset?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Owner-scoped page. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ScheduledSessionListResponse"];
+                    };
+                };
+                /** @description INVALID_PAGINATION. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scheduled-sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Read one task execution session
+         * @description Owner-only. Includes the immutable historical snapshot and the actual
+         *     model when the Scheduler is reachable; a Scheduler outage degrades to
+         *     the session row without the snapshot. The current editable task
+         *     configuration is read through the task GET endpoint.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    session_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Session detail. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ScheduledSessionDetail"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                /** @description Missing, deleted, ordinary, or another user's session (NOT_FOUND). */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        /**
+         * Delete one stopped task execution session
+         * @description Archives the scheduled conversation rows and clears the session cache.
+         *     It never deletes the task, its occurrence facts, or `.cron` resources.
+         *     A running or uncertain execution returns 409 until a stop proof exists.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    session_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Session deleted. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["Unauthorized"];
+                /** @description Missing or another user's session. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description EXECUTION_STOP_NOT_PROVEN — cancel and obtain a stop proof first. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scheduled-sessions/{session_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Read a task session's message history
+         * @description Same cursor/order/subagent_content contract as the ordinary session
+         *     history read, scoped to the scheduled table group. There is no
+         *     send-message endpoint for task sessions.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    page_token?: string;
+                    page_size?: number;
+                    order?: "asc" | "desc";
+                    subagent_content?: "full" | "placeholder";
+                };
+                header?: never;
+                path: {
+                    session_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description One message page. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SessionMessagesResponse"];
+                    };
+                };
+                /** @description INVALID_SUBAGENT_CONTENT or bad query parameters. */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                /** @description Missing, ordinary, or another user's session. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scheduled-sessions/{session_id}/runs/{run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Explicitly cancel a task Run (agent role)
+         * @description Uses the same in-process registry / cross-replica cancel flag as the
+         *     ordinary turn cancel endpoint. A successful response is NOT a stop
+         *     proof; the terminal fact follows the normal turn finalization path.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    session_id: string;
+                    run_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Cancel requested (or the run was already terminal). */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            run_id?: string;
+                            status?: string;
+                        };
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                /** @description Run not found for this session/user. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2708,7 +3522,7 @@ export interface components {
             /** @enum {string} */
             type: "queued";
             meta?: {
-                /** @description The queued message's run id (the future turn's id */
+                /** @description The queued message's run id (the future turn's id, equal to the enqueueing request's trace id). */
                 run_id?: string;
                 /** @description 1-based queue depth at admission time (informational). */
                 queue_position?: number;
@@ -3276,6 +4090,288 @@ export interface components {
         OnlyOfficeCallbackResponse: {
             /** @description 0 on success, non-0 to trigger a DocumentServer retry. */
             error: number;
+        };
+        /**
+         * @description Structured time rule. `at` requires an RFC3339 `run_at` with an
+         *     explicit offset; `cron` requires exactly five fields in `expression`.
+         *     Both require an explicit IANA `timezone`. Cron macros, `@every`,
+         *     seconds, and expression timezone prefixes are rejected. Absolute
+         *     instants returned by the API are UTC.
+         */
+        ScheduleRule: {
+            /** @enum {string} */
+            type: "at" | "cron";
+            /**
+             * Format: date-time
+             * @example 2026-11-05T09:30:00+08:00
+             */
+            run_at?: string;
+            /** @example 30 9 * * * */
+            expression?: string;
+            /** @example Asia/Shanghai */
+            timezone: string;
+        };
+        ScheduledSessionPolicy: {
+            /**
+             * @description `new` creates one independent owner session per occurrence; `existing` explicitly targets an owner session and is rechecked at execution time.
+             * @default new
+             * @enum {string}
+             */
+            mode: "new" | "existing";
+            /** @description Required for `existing`; forbidden for `new`. */
+            session_id?: string;
+        };
+        ScheduledTaskCreate: {
+            name: string;
+            /** @description Non-empty instruction, bounded by the interactive message byte/token limits. */
+            prompt: string;
+            schedule: components["schemas"]["ScheduleRule"];
+            /**
+             * @default {
+             *       "mode": "new"
+             *     }
+             */
+            session: components["schemas"]["ScheduledSessionPolicy"];
+            /** @description Optional catalog model; omitted uses the deployment default. */
+            model?: string;
+            /**
+             * @description Optional effort; omitted uses the deployment default.
+             * @enum {string}
+             */
+            reasoning_effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
+            /** @default true */
+            enabled: boolean;
+            /**
+             * Format: int64
+             * @description Optional published resource revision; requires manifest_hash.
+             */
+            resource_revision?: number;
+            /** @description SHA-256 manifest digest of the bound resource revision. */
+            manifest_hash?: string;
+        };
+        /**
+         * @description Partial update; omitted fields are unchanged. Configuration edits affect
+         *     future materialized snapshots only. Disabling cancels unstarted
+         *     occurrences but does not cancel a running turn. Resuming cron computes
+         *     the next slot after the resume time. Re-enabling a consumed `at` does
+         *     not replay it; explicitly supplying a new future `run_at` reschedules it.
+         */
+        ScheduledTaskPatch: {
+            name?: string;
+            prompt?: string;
+            schedule?: components["schemas"]["ScheduleRule"];
+            session?: components["schemas"]["ScheduledSessionPolicy"];
+            model?: string;
+            /** @enum {string} */
+            reasoning_effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
+            enabled?: boolean;
+            /**
+             * Format: int64
+             * @description Bind a published revision (0 clears the binding; requires manifest_hash consistency).
+             */
+            resource_revision?: number;
+            manifest_hash?: string;
+            /**
+             * Format: int64
+             * @description Optimistic concurrency; a stale value returns 409 REVISION_CONFLICT.
+             */
+            expected_revision?: number;
+        };
+        ScheduledTask: {
+            task_id: string;
+            name: string;
+            prompt: string;
+            schedule: components["schemas"]["ScheduleRule"];
+            session: components["schemas"]["ScheduledSessionPolicy"];
+            model?: string;
+            reasoning_effort?: string;
+            enabled: boolean;
+            /**
+             * Format: date-time
+             * @description Next unmaterialized UTC slot; omitted when a one-shot is consumed.
+             */
+            next_run_at?: string;
+            /** Format: int64 */
+            revision: number;
+            /** @enum {string} */
+            paused_reason?: "TASK_PAUSED" | "USER_UNAVAILABLE" | "SESSION_UNAVAILABLE" | "TASK_DELETED" | "SESSION_POLICY_MIGRATION_REQUIRED";
+            /**
+             * Format: int64
+             * @description Currently bound published resource revision; 0 = no resources.
+             */
+            resource_revision?: number;
+            manifest_hash?: string;
+            /** @description Server-owned read-only hold; while set no occurrence may start. */
+            execution_hold_occurrence_id?: string;
+            /** @description Server-owned read-only reason while the execution hold is set. */
+            blocked_reason?: string;
+            /**
+             * Format: date-time
+             * @description UTC timestamp.
+             */
+            create_time: string;
+            /**
+             * Format: date-time
+             * @description UTC timestamp.
+             */
+            update_time: string;
+        };
+        ScheduledTaskListResponse: {
+            tasks: components["schemas"]["ScheduledTask"][];
+            limit: number;
+            offset: number;
+        };
+        /**
+         * @description Durable occurrence/execution fact. It remains available after Redis
+         *     event replay retention expires. Message content, tool activity,
+         *     artifacts, and usage use the associated session/run read APIs.
+         */
+        ScheduledTaskRun: {
+            occurrence_id: string;
+            task_id: string;
+            /** Format: int64 */
+            revision: number;
+            /**
+             * Format: date-time
+             * @description Planned UTC slot.
+             */
+            scheduled_for: string;
+            /** @description Stable turn Run identity used by cancel/events APIs. */
+            run_id: string;
+            session_id: string;
+            /**
+             * @description Always new; session.mode=existing is retired.
+             * @enum {string}
+             */
+            session_mode: "new";
+            /**
+             * @description Authoritative conversation storage provenance.
+             * @enum {string}
+             */
+            session_source?: "scheduled" | "legacy_interactive";
+            /** @description Immutable historical configuration snapshot for this occurrence. */
+            snapshot?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Format: int64
+             * @description Pinned published resource revision (0 = none).
+             */
+            resource_revision?: number;
+            manifest_hash?: string;
+            /** @description The model this occurrence actually resolved to (deployment default included). */
+            actual_model?: string;
+            /** @description True when the task-session content has been deleted; the occurrence fact remains. */
+            content_deleted?: boolean;
+            /** @enum {string} */
+            status: "pending" | "preparing" | "launching" | "running" | "succeeded" | "error" | "skipped" | "cancelled" | "interrupted";
+            /** @enum {string} */
+            reason?: "TASK_OVERLAP" | "TASK_EXECUTION_UNCERTAIN" | "SESSION_BUSY" | "USER_UNAVAILABLE" | "SESSION_UNAVAILABLE" | "TASK_TIMEOUT" | "TASK_PAUSED" | "TASK_DELETED" | "ADMISSION_UNAVAILABLE" | "START_REJECTED" | "RESULT_UNKNOWN" | "RESULT_PERSIST_FAILED" | "SESSION_POLICY_MIGRATION_REQUIRED";
+            /** @description Persistent safe-not-started claim count. */
+            attempt_count: number;
+            /**
+             * Format: date-time
+             * @description UTC retry eligibility time.
+             */
+            next_attempt_at?: string;
+            /**
+             * Format: date-time
+             * @description UTC startup-fence crossing time.
+             */
+            started_at?: string;
+            /**
+             * Format: date-time
+             * @description UTC terminal time.
+             */
+            finished_at?: string;
+            error?: string;
+            /**
+             * Format: date-time
+             * @description UTC timestamp.
+             */
+            create_time: string;
+            /**
+             * Format: date-time
+             * @description UTC timestamp.
+             */
+            update_time: string;
+        };
+        ScheduledTaskRunListResponse: {
+            runs: components["schemas"]["ScheduledTaskRun"][];
+            limit: number;
+            offset: number;
+        };
+        ScheduledResourceFile: {
+            /** @description Workspace-relative slash-separated path. */
+            path: string;
+            /** Format: int64 */
+            size: number;
+            /** @description Present in published version manifests. */
+            sha256?: string;
+        };
+        ScheduledResourceVersion: {
+            /** Format: int64 */
+            resource_revision: number;
+            manifest_hash: string;
+            file_count: number;
+            /** Format: int64 */
+            total_bytes: number;
+            /** Format: date-time */
+            create_time: string;
+        };
+        ScheduledResourceGetResponse: {
+            task_id: string;
+            /**
+             * Format: int64
+             * @description CAS fence; pass it back to publish for optimistic concurrency.
+             */
+            draft_revision: number;
+            files: components["schemas"]["ScheduledResourceFile"][];
+            versions: components["schemas"]["ScheduledResourceVersion"][];
+        };
+        ScheduledResourcePublishRequest: {
+            /**
+             * Format: int64
+             * @description Optional; a stale value fails with 409 REVISION_CONFLICT.
+             */
+            expected_draft_revision?: number;
+            /** @description Publication idempotency key; replaying it returns the same revision. */
+            request_id: string;
+        };
+        ScheduledResourcePublishResponse: {
+            /** Format: int64 */
+            resource_revision: number;
+            manifest_hash: string;
+            file_count: number;
+            /** Format: int64 */
+            total_bytes: number;
+        };
+        ScheduledSession: {
+            session_id: string;
+            title: string;
+            task_id: string;
+            occurrence_id: string;
+            run_id: string;
+            context_compacted?: boolean;
+            /** @enum {string} */
+            session_source: "scheduled";
+            /** Format: date-time */
+            create_time: string;
+            /** Format: date-time */
+            update_time: string;
+        };
+        ScheduledSessionDetail: components["schemas"]["ScheduledSession"] & {
+            /** @description Immutable historical configuration captured for this occurrence. */
+            snapshot?: {
+                [key: string]: unknown;
+            };
+            /** @description The model this occurrence actually executed with. */
+            actual_model?: string;
+        };
+        ScheduledSessionListResponse: {
+            sessions: components["schemas"]["ScheduledSession"][];
+            limit: number;
+            offset: number;
         };
     };
     responses: {

@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { KeyRound } from 'lucide-react';
+import { CalendarClock, KeyRound } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useResizableWidth } from '@/hooks/use-resizable-width';
 import { Button } from '@/components/ui/button';
 import { LLMTokenDialog } from '@/components/settings/llm-token-dialog';
+import { ScheduledTasksDialog } from '@/components/settings/scheduled-tasks-dialog';
 import { Resizer } from '@/components/ui/resizer';
 import { Sidebar } from './sidebar';
 import { CenterPanel } from './center-panel';
@@ -15,6 +16,7 @@ const RIGHT_PANEL_KEY = 'blowball:right-panel-width';
 export function AppLayout() {
   const { logout } = useAuth();
   const [tokenDialogOpen, setTokenDialogOpen] = useState(false);
+  const [tasksDialogOpen, setTasksDialogOpen] = useState(false);
   const [leftWidth, adjustLeftWidth] = useResizableWidth(LEFT_PANEL_KEY, 288, { min: 200, max: 480 });
   const [rightWidth, adjustRightWidth] = useResizableWidth(RIGHT_PANEL_KEY, 420, { min: 320, max: 720 });
 
@@ -29,6 +31,15 @@ export function AppLayout() {
           blowball
         </div>
         <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setTasksDialogOpen(true)}
+            title="管理定时 Agent 任务"
+          >
+            <CalendarClock className="h-3.5 w-3.5" />
+            定时任务
+          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -70,6 +81,7 @@ export function AppLayout() {
       </div>
 
       <LLMTokenDialog open={tokenDialogOpen} onClose={() => setTokenDialogOpen(false)} />
+      <ScheduledTasksDialog open={tasksDialogOpen} onClose={() => setTasksDialogOpen(false)} />
     </div>
   );
 }

@@ -367,6 +367,30 @@ export type LLMTokenStatus =
   paths['/api/v1/me/llm-token']['get']['responses']['200']['content']['application/json'];
 export type LLMTokenPutRequest =
   paths['/api/v1/me/llm-token']['put']['requestBody']['content']['application/json'];
+// 定时任务管理属于 api 分区（add-scheduled-task-management）：CRUD 与 occurrence
+// 历史都使用 apiGet/apiPost/apiPatch/apiDelete，不走 Agent 流式 base。
+export type ScheduleRule = components['schemas']['ScheduleRule'];
+export type ScheduledSessionPolicy = components['schemas']['ScheduledSessionPolicy'];
+export type ScheduledTask = components['schemas']['ScheduledTask'];
+export type ScheduledTaskCreate =
+  paths['/api/v1/scheduled-tasks']['post']['requestBody']['content']['application/json'];
+export type ScheduledTaskPatch =
+  paths['/api/v1/scheduled-tasks/{task_id}']['patch']['requestBody']['content']['application/json'];
+export type ScheduledTaskListResponse =
+  paths['/api/v1/scheduled-tasks']['get']['responses']['200']['content']['application/json'];
+export type ScheduledTaskRun = components['schemas']['ScheduledTaskRun'];
+export type ScheduledTaskRunListResponse =
+  paths['/api/v1/scheduled-tasks/{task_id}/runs']['get']['responses']['200']['content']['application/json'];
+// 任务资源（.cron 草稿与已发布版本）：GET 元数据 + 幂等发布，均走 api 分区。
+export type ScheduledResourceGetResponse =
+  paths['/api/v1/scheduled-tasks/{task_id}/resources']['get']['responses']['200']['content']['application/json'];
+export type ScheduledResourceVersion = components['schemas']['ScheduledResourceVersion'];
+export type ScheduledResourcePublishResponse =
+  paths['/api/v1/scheduled-tasks/{task_id}/resources/publish']['post']['responses']['200']['content']['application/json'];
+// 任务执行会话（1.3.0 起与普通会话列表彻底分离）的历史读：契约明说与普通会话
+// 历史“同 cursor/order/subagent_content 契约”，含同样的 event_type 缺 'artifact'
+// 缺口，直接复用已放宽的响应形状。
+export type ScheduledSessionMessagesResponse = SessionMessagesResponse;
 // 发送请求的思考等级参数类型(与契约枚举一致;UI 提供全集,见 model-selector)。
 export type ReasoningEffort = NonNullable<SendMessageRequest['reasoning_effort']>;
 export type CreateSessionResponse = paths['/api/v1/sessions']['post']['responses']['200']['content']['application/json'];
