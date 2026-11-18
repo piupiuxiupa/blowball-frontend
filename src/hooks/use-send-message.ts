@@ -12,6 +12,7 @@ import type {
   SessionMessagesResponse,
   Message,
   ReasoningEffort,
+  TurnOutputFormat,
   AttachmentRef,
 } from '@/lib/api';
 
@@ -61,6 +62,7 @@ export function useSendMessage() {
       content,
       model,
       reasoningEffort,
+      outputFormat,
       attachmentIds,
       imageAttachments,
     }: {
@@ -81,6 +83,8 @@ export function useSendMessage() {
       // agents.<name>.model 配置与目录条目派生。
       model?: string;
       reasoningEffort?: ReasoningEffort;
+      // 当轮产物格式：auto/空串省略，具体 canonical 值随本次提交快照发送。
+      outputFormat?: TurnOutputFormat;
     }): Promise<SubmitAcceptance> => {
       if (!token) throw new Error('Not authenticated');
 
@@ -92,6 +96,7 @@ export function useSendMessage() {
             content,
             ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+            ...(outputFormat && outputFormat !== 'auto' ? { output_format: outputFormat } : {}),
             ...(attachmentIds && attachmentIds.length > 0
               ? { attachment_ids: attachmentIds }
               : {}),

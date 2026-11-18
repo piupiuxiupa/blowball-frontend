@@ -3,6 +3,7 @@ import { apiDelete, apiGet, apiPatch, apiPost, ApiRequestError } from '@/lib/api
 import type { SessionListResponse, CreateSessionResponse, UpdateTitleResponse } from '@/lib/api';
 import { useUIStore } from '@/stores/ui-store';
 import { usePendingQueueStore } from '@/stores/pending-queue-store';
+import { contextUsageQueryKey } from '@/hooks/use-context-usage';
 
 export function useUpdateSession() {
   const queryClient = useQueryClient();
@@ -68,6 +69,7 @@ export function useDeleteSession() {
     // session-message-queue：等待读模型与本地确认项随会话一并清理。
     queryClient.removeQueries({ queryKey: ['session-queue', sessionId] });
     queryClient.removeQueries({ queryKey: ['session', sessionId] });
+    queryClient.removeQueries({ queryKey: contextUsageQueryKey(sessionId) });
     usePendingQueueStore.getState().clearSession(sessionId);
     queryClient.invalidateQueries({ queryKey: ['sessions'] });
 

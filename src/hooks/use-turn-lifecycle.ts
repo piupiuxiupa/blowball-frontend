@@ -7,6 +7,7 @@ import { queryClient } from '@/lib/query-client';
 import { consumeTurnStream, peekTurnEventId, clearTurnStreamState, reconcileTurnHistory } from '@/lib/turn-stream';
 import { DRAFT_SESSION_ID, useUIStore } from '@/stores/ui-store';
 import { usePendingQueueStore } from '@/stores/pending-queue-store';
+import { reconcileContextUsage } from '@/hooks/use-context-usage';
 
 // turn 生命周期的客户端编排（turn-detach-resume + adapt-session-message-queue）：
 //   startRunOutput —— 发送路径确认立即执行后，把首帧 + 剩余迭代器交给独立生命周期
@@ -123,6 +124,9 @@ async function runOutput(
     // 条件释放：新 run 已接管时不删除其登记（场景：A 流关闭后 B 在收尾期间接管）。
     releaseRun(sessionId, resolvedRunId);
     clearTurnStreamState(sessionId, resolvedRunId);
+    // context-usage：done 与 usage 落库不原子，按本 run 身份异步做有界核对；
+    // 不 await，避免拖住上面的 owner 清理或 FIFO 下一 run 接管。
+    void reconcileContextUsage(sessionId, resolvedRunId);
     // turn 终局后让列表徽标（generating）尽快消失，不等下一次聚焦重取；单会话详情
     // 缓存同因（adapt-session-detail）。等待队列同刷（FIFO 已前进，D4 即时刷新）。
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });

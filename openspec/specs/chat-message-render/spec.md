@@ -56,7 +56,7 @@
 
 ### Requirement: 按 agent 差异化渲染助手消息
 
-系统 SHALL 按消息所属 agent 名采用不同渲染形态：Confucius（主编排 agent）的输出以全宽裸 Markdown 渲染，不套用消息气泡、头像与名字标签；子 agent（Chongzhi、Liang）的输出按调用身份（(agent, run_id) 复合键）各自渲染为独立触发行——并发同名子 agent 调用的交错行按各自 run id 归组，不拼入同一行。触发行仅显示「名字 + 状态」指示，点击打开浮窗单独查看完整内容（见 subagent-float-window），不提供行内展开。每个 agent 范围内的正文片段与工具调用 SHALL 按事件到达顺序在浮窗内容中渲染，不得把工具记录统一汇总到正文之后；tool_result SHALL 按 tool_call_id 合并到对应工具调用卡内，而不是渲染为独立结果卡。该规则对持久化消息与流式段统一生效。
+系统 SHALL 按消息所属 agent 名采用不同渲染形态：Confucius（主编排 agent）的输出以全宽裸 Markdown 渲染，不套用消息气泡、头像与名字标签；历史主 Agent 名 `Confuse` SHALL 与 `Confucius` 使用同一主回答渲染路径，不得被归类为子 Agent。子 agent（Chongzhi、Liang）的输出按调用身份（(agent, run_id) 复合键）各自渲染为独立触发行——并发同名子 agent 调用的交错行按各自 run id 归组，不拼入同一行。触发行仅显示「名字 + 状态」指示，点击打开浮窗单独查看完整内容（见 subagent-float-window），不提供行内展开。每个 agent 范围内的正文片段与工具调用 SHALL 按事件到达顺序在浮窗内容中渲染，不得把工具记录统一汇总到正文之后；tool_result SHALL 按 tool_call_id 合并到对应工具调用卡内，而不是渲染为独立结果卡。该规则对持久化消息与流式段统一生效。
 
 子 agent 触发行在全局消息流中的位置 SHALL 跟随其父 invoke tool_call 的到达顺序：父 agent 在子 agent 开始前输出的内容位于子 agent 触发行之前；子 agent 结束后父 agent 继续输出的内容位于该行之后，不得因为按 agent 归组而把子 agent 触发行整体挪到父 agent 完整消息末尾。
 
@@ -66,6 +66,12 @@ placeholder 视图（见「消息历史消费 placeholder 子 Agent 视图」）
 
 - **WHEN** 渲染 agent 为 Confucius 的助手消息（持久化或流式）
 - **THEN** 其正文以全宽 Markdown 直接渲染，不渲染气泡背景、头像与名字标签
+
+#### Scenario: 历史 Confuse 主回答正文保持可见
+
+- **WHEN** 渲染持久化 agent 为 Confuse 的助手 token/消息块
+- **THEN** 其与 Confucius 一样直接渲染全宽 Markdown 正文
+- **AND** 不得变成仅显示“名字 + 已完成”而无正文的子 Agent 触发行
 
 #### Scenario: 顶层工具记录与正文按顺序内联
 

@@ -7,7 +7,7 @@
 ## Requirements
 
 ### Requirement: 运行中会话可继续编辑和提交消息
-系统 SHALL 在真实会话存在活跃 run 或 attach 订阅时允许编辑正文、选择模型/思考等级和附加上下文/图片，并 SHALL 分离发送与停止当前 run 的操作入口。系统 SHALL 只在对应消息的建会话、上传或等待提交确认阶段阻止重复提交；运行状态本身 SHALL NOT 禁用输入。提交 SHALL 使用发送时捕获的正文、上下文、图片和模型参数快照。
+系统 SHALL 在真实会话存在活跃 run 或 attach 订阅时允许编辑正文、选择模型/思考等级、当轮产物格式和附加上下文/图片，并 SHALL 分离发送与停止当前 run 的操作入口。系统 SHALL 只在对应消息的建会话、上传或等待提交确认阶段阻止重复提交；运行状态本身 SHALL NOT 禁用输入。提交 SHALL 使用发送时捕获的正文、上下文、图片、模型参数和当轮产物格式快照。
 
 #### Scenario: 生成中继续输入并发送
 - **WHEN** 用户正在查看一个持续输出的会话并输入另一条消息
@@ -20,6 +20,11 @@
 #### Scenario: 提交中防重复
 - **WHEN** 本条消息还在上传、创建会话或等待服务端确认
 - **THEN** 系统阻止该提交的重复触发，但不把其他会话的输入和发送动作全局锁住
+
+#### Scenario: 运行中提交携带当轮格式快照
+- **WHEN** run A 正在输出，用户以 `xlsx` 提交消息 B，随后把下一条消息的格式改为 `pdf`
+- **THEN** B 的请求只携带提交时捕获的 `xlsx`，A 的输出与停止目标不变
+- **AND** B 被接受后只消费自己的格式快照，不覆盖后续 `pdf` 选择
 
 ### Requirement: 通过 queued SSE 确认消息已被接受
 系统 SHALL 支持 `POST /sessions/{session_id}/messages` 返回的 `200 text/event-stream` 和 `queued` 事件，SHALL 用其 `meta.run_id`（以 `X-Run-Id` 兜底）标识等待项，并 SHALL 把它视为已接受但尚未执行。系统 SHALL NOT 要求 JSON/202 回执，SHALL NOT 把等待 run 登记为当前活跃 run或把该事件渲染成 Agent 正文。新提交收到 queued 确认后 SHALL 能完成提交状态并 detach 等待连接，而不取消服务端消息。
@@ -90,7 +95,7 @@
 - **THEN** 系统显示失败原因并允许重试，不移除其他等待项或清除当前输出
 
 ### Requirement: 排队提交失败不污染当前运行或新草稿
-系统 SHALL 对 `QUEUE_FULL`、`SESSION_BUSY`、参数/附件拒绝、鉴权及请求级网络错误保留未接受的发送快照，并 SHALL 向用户区分「未发送」与「已入队」。`SESSION_BUSY` SHALL 保留既有静默 attach/防重兼容。失败与成功回调 SHALL 仅影响原始会话和匹配的草稿修订，SHALL NOT 回滚整个历史缓存、覆盖新草稿或清除正在执行的流。系统 SHALL NOT 自动重试 POST 造成重复消息。
+系统 SHALL 对 `QUEUE_FULL` / `SESSION_BUSY`、参数/附件/当轮产物格式拒绝、鉴权及请求级网络错误保留未接受的发送快照（包括格式选择），并 SHALL 向用户区分「未发送」与「已入队」。`SESSION_BUSY` SHALL 保留既有静默 attach/防重兼容。失败与成功回调 SHALL 仅影响原始会话和匹配的草稿修订，SHALL NOT 回滚整个历史缓存、覆盖新草稿、清除后续格式选择或清除正在执行的流。系统 SHALL NOT 自动重试 POST 造成重复消息。
 
 #### Scenario: 队列已满
 - **WHEN** A 正在输出且新提交返回 409 QUEUE_FULL
@@ -98,7 +103,7 @@
 
 #### Scenario: 部署尚未开启队列
 - **WHEN** 提交返回 409 SESSION_BUSY 和当前 run id
-- **THEN** 系统保留未发送内容，静默 attach 或复用既有订阅，并以非弹窗方式告知本条未被接受
+- **THEN** 系统保留未发送内容，静默 attach 或复用既有订阅，并以非弹窗方式告知本条尚未发送
 
 #### Scenario: 旧请求结果不覆盖另一会话的草稿
 - **WHEN** A 的提交尚未确认，用户切到 B 修改正文或附件后 A 返回失败或成功
@@ -107,3 +112,8 @@
 #### Scenario: 已接受后发生连接异常
 - **WHEN** 消息已有服务端接受证据，后续订阅发生网络中断
 - **THEN** 系统按 queue/detail/history 或 attach 恢复，不把它当成未发送进行自动重复 POST
+
+#### Scenario: 格式准入失败保留完整提交现场
+- **WHEN** A 正在输出，消息 B 因 `INVALID_OUTPUT_FORMAT` 或其他请求级校验失败未被接受
+- **THEN** B 的正文、附件和当轮格式选择均保留，A 的 run、游标和输出不受影响
+- **AND** 系统显示消息拒绝原因且不自动重试 POST

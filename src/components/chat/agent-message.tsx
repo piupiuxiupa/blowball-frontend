@@ -2,6 +2,7 @@ import { memo } from 'react';
 import type { AgentStatus } from '@/stores/ui-store';
 import type { MessageTimelineItem } from '@/lib/message-timeline';
 import type { AttachmentRef } from '@/lib/api';
+import { isConfuciusAgent } from '@/lib/agent';
 import { UserBubble } from './user-bubble';
 import { BareConfucius } from './bare-confucius';
 import { SubAgentRow } from './sub-agent-row';
@@ -31,7 +32,7 @@ export interface AgentMessageProps {
 
 // 按 role / agent 名统一派发：持久化块与流式段归约为同一形状后共用此分发器（design D3）。
 //   role === 'user'           → UserBubble（右侧气泡）
-//   agent === 'Confucius'     → BareConfucius（全宽裸 Markdown）
+//   Confucius / 历史 Confuse → BareConfucius（全宽裸 Markdown）
 //   else (Chongzhi | Liang)   → SubAgentRow（触发行，点击打开浮窗）
 // 主/子判定键于固定 agent 枚举字面量；拓扑日后变化只需改这一处谓词。
 export const AgentMessage = memo(function AgentMessage(props: AgentMessageProps) {
@@ -46,7 +47,7 @@ export const AgentMessage = memo(function AgentMessage(props: AgentMessageProps)
     );
   }
 
-  if (props.agent === 'Confucius') {
+  if (isConfuciusAgent(props.agent)) {
     return (
       <BareConfucius
         reasoning={props.reasoning}

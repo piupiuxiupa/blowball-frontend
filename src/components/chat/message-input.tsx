@@ -16,7 +16,7 @@ import { ContextPicker, type PickerEntry, type PickerTab } from '@/components/ch
 import { ComposerAttachmentChips } from '@/components/chat/attachment-chips';
 import { ComposerImageChips } from '@/components/chat/image-attachment-chips';
 import { serializeAdditionalContext } from '@/lib/additional-context';
-import { ApiRequestError, type AttachmentRef } from '@/lib/api';
+import { ApiRequestError, type AttachmentRef, type TurnOutputFormat } from '@/lib/api';
 import { useNoticeStore } from '@/stores/notice-store';
 import { PATH_MIME, PATH_TYPE_MIME } from '@/lib/workspace-dnd';
 import { useAttachmentStore } from '@/stores/attachment-store';
@@ -26,6 +26,12 @@ import { Textarea } from '@/components/ui/textarea';
 
 interface MessageInputProps {
   disabled?: boolean;
+}
+
+type ConcreteOutputFormat = Exclude<TurnOutputFormat, 'auto' | ''>;
+interface OutputFormatSelection {
+  sessionId: string;
+  format: ConcreteOutputFormat;
 }
 
 // 触发命中：tab 由触发符决定（@=文件、/=技能工具），start 是触发符在文本中的下标
@@ -62,6 +68,7 @@ function describeSendError(err: unknown): string {
         return '等待队列已满，本条消息未发送；可稍后重试，或先撤回等待中的消息';
       case 'INVALID_MODEL':
       case 'INVALID_EFFORT':
+      case 'INVALID_OUTPUT_FORMAT':
       case 'MODEL_NOT_VISION':
       case 'CONTENT_TOO_LONG':
       case 'REQUEST_TOO_LARGE':
@@ -75,6 +82,9 @@ function describeSendError(err: unknown): string {
 
 export function MessageInput({ disabled }: MessageInputProps) {
   const [content, setContent] = useState('');
+  // 当轮格式选择：对象身份即一次用户选择的快照，提交接受后据此条件消费；
+  // sessionId 让切换会话时不会把旧会话尚未提交的格式显示成新会话选择。
+  const [outputFormatSelection, setOutputFormatSelection] = useState<OutputFormatSelection | null>(null);
   // 停止中：绑定取消目标 run id（4.2）——目标终局或 active run 变化即复位，
   // 不能等全局 busy 翻 false，否则连续执行会把下一轮停止按钮一直锁住。取消端点
   // 幂等，重复触发无副作用，这里是纯 UI 防抖。
@@ -90,6 +100,8 @@ export function MessageInput({ disabled }: MessageInputProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadImages = useImageAttachmentUpload();
   const activeSessionId = useUIStore((s) => s.activeSessionId);
+  const selectedOutputFormat =
+    outputFormatSelection?.sessionId === activeSessionId ? outputFormatSelection.format : null;
   // 活跃 run（运行/attach 期间）：停止按钮的取消目标。运行本身不再禁用编辑
   //（5.1：运行中允许编辑正文、选模型、附加上下文/图片并继续提交——队列接受等待）。
   const activeRunId = useUIStore((s) =>
@@ -323,6 +335,9 @@ export function MessageInput({ disabled }: MessageInputProps) {
     const block = serializeAdditionalContext(items, references);
     const fullContent = block ? `${block}\n\n${text}` : text;
     const images = pendingImages;
+    // 与正文/图片同一提交边界捕获：上传、建会话或等待接受期间的后续选择不改变本请求。
+    const submittedFormatSelection =
+      outputFormatSelection?.sessionId === activeSessionId ? outputFormatSelection : null;
 
     // add-image-attachments（design D1）：上传发生在（可能的）建会话之后、消息请求
     // 之前；任一失败中止且不发出消息请求，文本与全部图片保留——成功项已进缓存，
@@ -359,7 +374,17 @@ export function MessageInput({ disabled }: MessageInputProps) {
         references,
         model: selectedModel ?? undefined,
         reasoningEffort: selectedEffort ?? undefined,
+        outputFormat: submittedFormatSelection?.format,
         ...(attachmentIds && imageAttachments ? { attachmentIds, imageAttachments, images } : {}),
+      }, {
+        onSuccess: () => {
+          // mutation 成功即 immediate/queued 已接受（不是 turn 完成）。只消费本提交的
+          // 选择快照；等待期间的新选择或另一会话的快照对象不同，不能被旧回调清掉。
+          if (!submittedFormatSelection) return;
+          setOutputFormatSelection((current) =>
+            current === submittedFormatSelection ? null : current
+          );
+        },
       });
       // 不乐观清空：接受后由 isSuccess effect 按匹配修订清空（5.2）；失败时现场保留。
     };
@@ -466,7 +491,33 @@ export function MessageInput({ disabled }: MessageInputProps) {
         />
       )}
       {/* 模型/思考等级选择:影响下一条消息,挂在输入区上方;无可选目录时自行隐藏。 */}
-      <ModelSelector />
+      <div className="flex flex-wrap items-center gap-2">
+        <ModelSelector />
+        <select
+          aria-label="本轮产物格式"
+          title="仅在本轮需要生成产物时约束主要文件格式，不强制生成文件"
+          value={selectedOutputFormat ?? ''}
+          disabled={disabled || !activeSessionId}
+          onChange={(e) => {
+            if (!activeSessionId) return;
+            const value = e.target.value;
+            setOutputFormatSelection(
+              value
+                ? { sessionId: activeSessionId, format: value as ConcreteOutputFormat }
+                : null
+            );
+          }}
+          className="glass-subtle h-7 rounded-full px-2 text-xs text-foreground/80 outline-none transition-all hover:bg-white/75 focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+        >
+          <option value="">格式：自动</option>
+          <option value="html">HTML</option>
+          <option value="docx">Word (DOCX)</option>
+          <option value="pptx">PowerPoint (PPTX)</option>
+          <option value="pdf">PDF</option>
+          <option value="xlsx">Excel (XLSX)</option>
+          <option value="md">Markdown</option>
+        </select>
+      </div>
       <div className="flex items-center gap-1">
         {/* 图片附件（add-image-attachments）：选题零请求，满 4 张禁用（契约硬限制，
             非 vision 预测——模型门控只在发送失败时兜底，design D4）。 */}

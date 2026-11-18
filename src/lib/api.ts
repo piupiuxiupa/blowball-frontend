@@ -9,8 +9,8 @@ import type { components, paths } from './openapi';
 // VITE_AGENT_BASE_URL falls back to the API base so the monolith (`--role all`,
 // dev, tests) and existing .env files keep working unchanged — set it only when
 // running the split deployment against server.agent_port.
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
-const AGENT_BASE = import.meta.env.VITE_AGENT_BASE_URL || API_BASE;
+const API_BASE = import.meta.env?.VITE_API_BASE_URL || 'http://localhost:8080';
+const AGENT_BASE = import.meta.env?.VITE_AGENT_BASE_URL || API_BASE;
 
 export type ApiError = {
   error: {
@@ -343,6 +343,11 @@ export type SessionListEntry = NonNullable<SessionListResponse['sessions']>[numb
 // 读取，见 useAttachRun 的双通道发现）；create_time 暂无 UI 消费点。
 export type SessionDetail =
   paths['/api/v1/sessions/{session_id}']['get']['responses']['200']['content']['application/json'];
+// GET .../context-usage：最近已持久化 turn 的最后一轮 provider 观测（api 分区）。
+// available:false 时不带数值；输入空间占比必须使用 input_budget_tokens 而非硬窗口。
+export type SessionContextUsageResponse =
+  paths['/api/v1/sessions/{session_id}/context-usage']['get']['responses']['200']['content']['application/json'];
+export type SessionContextUsageSnapshot = components['schemas']['SessionContextUsageSnapshot'];
 // turn 取消响应（cancel 端点）：{run_id, status}。status 枚举见 openapi——
 // cancelling（已接受）/ queued（与 pump 竞争，重试）/ running，及幂等取消已终局
 // run 时的终态（done/error/cancelled/interrupted）。adapt-session-message-queue：
@@ -393,6 +398,8 @@ export type ScheduledResourcePublishResponse =
 export type ScheduledSessionMessagesResponse = SessionMessagesResponse;
 // 发送请求的思考等级参数类型(与契约枚举一致;UI 提供全集,见 model-selector)。
 export type ReasoningEffort = NonNullable<SendMessageRequest['reasoning_effort']>;
+// 当轮产物格式偏好：自动模式（auto/空串）在发送时省略，具体值使用契约 canonical 枚举。
+export type TurnOutputFormat = NonNullable<SendMessageRequest['output_format']>;
 export type CreateSessionResponse = paths['/api/v1/sessions']['post']['responses']['200']['content']['application/json'];
 // turn-artifacts：后端在 Message.event_type 枚举中漏了 'artifact'（持久化的产物事件行），
 // 本地放宽为 string，待后端补齐契约后可还原为生成类型。放宽落在 Response 层级，

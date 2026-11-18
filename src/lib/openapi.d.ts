@@ -747,6 +747,68 @@ export interface paths {
         };
         trace?: never;
     };
+    "/api/v1/sessions/{session_id}/context-usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the latest durable context-usage snapshot for an owned session.
+         * @description API-partition-only endpoint. After JWT and session ownership checks,
+         *     reads exactly the latest MySQL turn_usage row by descending id. It
+         *     never reads Redis runtime status, invokes the agent, reconstructs
+         *     active context, or fills historical budgets from the current catalog.
+         *     Scheduled sessions are not exposed through this ordinary-session route.
+         *
+         *     Returns available:true only when the same row has positive provider
+         *     context_tokens, max_context_tokens, input_budget_tokens and complete
+         *     model/run/time metadata. With no row, legacy rows missing budget
+         *     metadata, or an incomplete/zero-context latest row, returns only
+         *     available:false and session_id; never falls back to an older valid row.
+         *
+         *     This is the last persisted turn's provider observation, not a live
+         *     next-request estimate or cumulative turn cost. During a running turn,
+         *     run_id/measured_at still identify the previous persisted turn. The done
+         *     SSE and best-effort usage write are not atomic: an immediate query
+         *     after done may briefly return the preceding row. Clients can compare
+         *     run_id to the just-completed run and retry using their refresh policy.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID of the ordinary session to read. */
+                    session_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Latest persisted context snapshot, or unavailable without snapshot fields. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SessionContextUsageResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                404: components["responses"]["NotFound"];
+                500: components["responses"]["Internal"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{session_id}/queue": {
         parameters: {
             query?: never;
@@ -1141,6 +1203,10 @@ export interface paths {
          * Send a user message and stream the agent's response as SSE.
          * @description The session must already exist and belong to the authenticated user.
          *     Sending to a non-existent session or another user's session returns 404.
+         *     `output_format` is resolved independently for each turn and preserved
+         *     through queue continuation. It chooses a format only when an artifact
+         *     is otherwise needed; omitted/empty/`auto` leaves format selection to
+         *     the model rather than defaulting to HTML.
          */
         post: {
             parameters: {
@@ -1190,7 +1256,10 @@ export interface paths {
                  *     (per-request-model-selection): `INVALID_MODEL` (unknown catalog
                  *     name) or `INVALID_EFFORT` (invalid effort value, non-`none`
                  *     effort explicitly requested on a `thinking: false` entry, or an
-                 *     effort conflicting with a configured agent `output_schema`), or
+                 *     effort conflicting with a configured agent `output_schema`),
+                 *     `INVALID_OUTPUT_FORMAT` (unsupported nonempty `output_format`;
+                 *     rejected before queue writes, attachment claims, turn execution,
+                 *     or LLM calls), or
                  *     `CONTENT_TOO_LONG` (add-input-token-limit): the `content`'s
                  *     estimated token count exceeds `messages.max_input_tokens`
                  *     (default 5000; CJK-aware heuristic estimate, message carries the
@@ -3227,6 +3296,38 @@ export interface components {
              */
             queued_count?: number;
         };
+        /** @description No usage row or the latest row lacks complete, positive context/window/budget metadata; older rows and the current model catalog are never used to fill gaps. */
+        SessionContextUsageUnavailable: {
+            /** @enum {boolean} */
+            available: false;
+            session_id: string;
+        };
+        /** @description The latest persisted turn's last LLM round provider observation, not a live rendered estimate of the next request. */
+        SessionContextUsageSnapshot: {
+            /** @enum {boolean} */
+            available: true;
+            session_id: string;
+            /** @description The persisted turn_usage.trace_id, which may still belong to the preceding turn while a new turn runs or its usage write is pending. */
+            run_id: string;
+            /** @description Model resolved for this persisted turn, not the currently selected catalog entry. */
+            model: string;
+            /** @description Last LLM round provider prompt_tokens + completion_tokens; never the turn's cumulative total_tokens. */
+            context_tokens: number;
+            /** @description Model hard context window recorded by this turn. */
+            max_context_tokens: number;
+            /** @description This turn's max_context_tokens minus its reserved max_completion_tokens and 4096-token safety margin. Use this budget, not the hard window, for input-space ratios. */
+            input_budget_tokens: number;
+            /** @description max(input_budget_tokens - context_tokens, 0); explicitly present even when zero. */
+            remaining_tokens: number;
+            /** @enum {string} */
+            measurement_basis: "last_turn_provider_usage";
+            /**
+             * Format: date-time
+             * @description UTC RFC3339 timestamp from this turn_usage row's created_at (millisecond precision).
+             */
+            measured_at: string;
+        };
+        SessionContextUsageResponse: components["schemas"]["SessionContextUsageUnavailable"] | components["schemas"]["SessionContextUsageSnapshot"];
         CreateSessionResponse: {
             /**
              * Format: uuid
@@ -3476,6 +3577,32 @@ export interface components {
              * @enum {string}
              */
             reasoning_effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
+            /**
+             * @description Conditional artifact format preference for this turn only:
+             *     `html` → `.html`, `docx` → `.docx`, `pptx` → `.pptx`, `pdf` → `.pdf`,
+             *     `xlsx` → `.xlsx`, `md` → `.md`. Omitted, empty string, and `auto` are equivalent:
+             *     respect explicit format requests in `content`, otherwise let the
+             *     model choose from the content and available tools, with no fixed
+             *     HTML default. Only exact lowercase values are accepted; `excel`,
+             *     `markdown`, `ppt`, and `powerpoint` are not aliases.
+             *     A concrete preference applies to the primary final artifact ONLY
+             *     if the existing Document Output Strategy otherwise calls for an
+             *     artifact. It does not force files for short Q&A, clarifications,
+             *     casual chat, or simple calculations, and does not constrain
+             *     temporary scripts or other supporting files. A concrete selection
+             *     overrides conflicting format hints in `content`; this is a model
+             *     instruction, not a backend format conversion or generation guarantee.
+             *     Each message may choose a different format; no selection is
+             *     inherited from previous turns or session defaults. The same semantic
+             *     value survives FIFO queue continuation and recovery, while old
+             *     queue entries without it mean `auto`. Stored user text, titles,
+             *     memory, and subsequent history remain the unmodified `content`.
+             *     Unsupported nonempty values return 400 `INVALID_OUTPUT_FORMAT`
+             *     before queue writes, attachment claims, turn execution, or LLM calls.
+             * @default auto
+             * @enum {string}
+             */
+            output_format: "auto" | "html" | "docx" | "pptx" | "pdf" | "xlsx" | "md" | "";
             /**
              * @description Image attachments uploaded either to this session via
              *     `POST /api/v1/sessions/{session_id}/attachments`
@@ -3753,7 +3880,11 @@ export interface components {
                  *     same label/key). `meta` records turn-level orchestration facts:
                  *     `parallel` (true when any assistant round dispatched >=2 tool_calls)
                  *     and `sub_agent_invocations` (objects carrying stable instance id,
-                 *     parent instance id, and dispatch order).
+                 *     parent instance id, and dispatch order). Its additive
+                 *     `context_tokens`, `max_context_tokens`, and `input_budget_tokens`
+                 *     fields carry the last-round provider observation and the model
+                 *     budgets resolved for this turn. The entire usage object is
+                 *     persisted unchanged in `turn_usage.usage_json`.
                  *
                  *     Legacy flat top-level fields (`prompt_tokens`, `completion_tokens`,
                  *     `total_tokens`, `reasoning_tokens`) have been MOVED under `total`;
@@ -3771,6 +3902,12 @@ export interface components {
                         sub_agent_invocations: components["schemas"]["SSESubAgentInvocation"][];
                         /** @description True when any assistant round dispatched >=2 tool_calls. */
                         parallel: boolean;
+                        /** @description Last LLM round provider prompt_tokens + completion_tokens, not cumulative spend; omitted without a positive observation. */
+                        context_tokens?: number;
+                        /** @description This turn's resolved model hard window; omitted when non-positive. */
+                        max_context_tokens?: number;
+                        /** @description NewRequestBudget(max_context_tokens, max_completion_tokens).InputTokens for this turn (hard window minus output reserve and 4096 safety margin); omitted when non-positive. */
+                        input_budget_tokens?: number;
                     };
                     /** @description Present only when the turn completed with an error; the failure message. */
                     error?: string;

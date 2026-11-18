@@ -11,6 +11,7 @@ import { PlanStatusBar } from '@/components/chat/plan-status-bar';
 import { SubAgentFloatWindow } from '@/components/chat/sub-agent-float-window';
 import { PendingQueue } from '@/components/chat/pending-queue';
 import { InlineNotices } from '@/components/chat/inline-notices';
+import { ContextUsageIndicator } from '@/components/chat/context-usage-indicator';
 
 export function ChatPanel() {
   const activeSessionId = useUIStore((s) => s.activeSessionId);
@@ -29,7 +30,10 @@ export function ChatPanel() {
           不提升 z-index 时，后绘制的消息层（glass 气泡各自的层叠上下文）会把
           工具/技能下拉浮层盖住。relative z-50 让头部及其下拉浮层整体压在消息层之上。 */}
       <div className="relative z-50 flex h-11 shrink-0 items-center justify-between border-b border-white/40 bg-white/20 px-4 text-sm font-medium backdrop-blur-sm">
-        <span>Agent 聊天</span>
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="shrink-0">Agent 聊天</span>
+          <ContextUsageIndicator />
+        </div>
         <div className="flex gap-1">
           <CatalogueButton
             label="可用工具"

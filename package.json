@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "test": "node --import ./scripts/alias-register.mjs --test tests/turn-stream.test.ts tests/queue-view.test.ts tests/run-owner.test.ts tests/scheduled-task.test.ts",
+    "test": "node --import ./scripts/alias-register.mjs --test tests/turn-stream.test.ts tests/queue-view.test.ts tests/run-owner.test.ts tests/scheduled-task.test.ts tests/context-usage.test.ts tests/agent.test.ts",
     "generate-api": "openapi-typescript ./openapi.yaml -o src/lib/openapi.d.ts"
   },
   "dependencies": {

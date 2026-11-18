@@ -19,6 +19,7 @@ import {
   type UserMessageAnchor,
 } from './message-navigation-rail';
 import type { Message } from '@/lib/api';
+import { isConfuciusAgent } from '@/lib/agent';
 
 export interface MessageBlock {
   id: string;
@@ -406,9 +407,9 @@ const EMPTY_ARTIFACTS: ArtifactInfo[] = [];
 // 是否为「裸 Confucius」助手条目（块或段）。用于收紧相邻裸块上边距（design D4）。
 function isBareConfuciusItem(item: ListItem): boolean {
   if (item.kind === 'block') {
-    return item.block.role === 'assistant' && item.block.agent === 'Confucius';
+    return item.block.role === 'assistant' && isConfuciusAgent(item.block.agent);
   }
-  return item.segment.agent === 'Confucius';
+  return isConfuciusAgent(item.segment.agent);
 }
 
 const SCROLL_THRESHOLD = 80;
